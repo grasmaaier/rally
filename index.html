@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="nl">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>Rally Printstudio</title>
+    <meta name="description" content="Parametrische 3D-printontwerpen voor de Bambu Lab A2L: vazen, lampenkappen, Gridfinity, grepen, verbinders, meubels en zelfwaterende plantenpotten." />
+    <meta name="theme-color" content="#0f8a5f" />
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%230f8a5f'/%3E%3Cpath d='M9 23V9h8a4.5 4.5 0 0 1 0 9h-8M16 18l6 5' fill='none' stroke='white' stroke-width='2.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E" />
+  </head>
+  <body>
+    <div id="app">
+      <header class="topbar">
+        <a class="brand" href="./" aria-label="Rally Printstudio">
+          <svg viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="8" /><path d="M9 23V9h8a4.5 4.5 0 0 1 0 9h-8M16 18l6 5" /></svg>
+          <span><b>Rally</b> <span class="brand-sub">Printstudio</span></span>
+        </a>
+        <nav class="tools" id="tools" aria-label="Gereedschap"></nav>
+        <div class="top-actions">
+          <label class="printer">
+            <span class="sr-only">Printer</span>
+            <select id="printer"></select>
+          </label>
+          <button id="theme" class="icon-btn" type="button" aria-label="Thema">☾</button>
+        </div>
+      </header>
+      <main class="layout">
+        <aside class="panel params">
+          <div class="intro">
+            <h1 id="tool-title">Rally</h1>
+            <p id="tool-desc"></p>
+          </div>
+          <div class="preset-row">
+            <select id="presets" aria-label="Voorbeelden"></select>
+            <button id="random" class="ghost" type="button" title="Willekeurig ontwerp">Verras me</button>
+            <button id="reset" class="ghost" type="button" title="Standaardwaarden">Reset</button>
+          </div>
+          <div id="error" class="callout error" role="alert" hidden></div>
+          <div id="form"></div>
+        </aside>
+        <section class="stage" aria-label="3D-voorbeeld">
+          <div id="viewer" class="viewer"></div>
+          <div class="stage-bar">
+            <div class="seg" id="view-toggle" hidden>
+              <button type="button" data-view="assembly" aria-pressed="true">Samengesteld</button>
+              <button type="button" data-view="plate" aria-pressed="false">Printplaat</button>
+            </div>
+            <div class="stage-tools">
+              <label class="pill-toggle"><input type="checkbox" id="section" /> Doorsnede</label>
+              <div class="seg">
+                <button type="button" data-cam="iso" title="Schuin aanzicht">3D</button>
+                <button type="button" data-cam="front" title="Vooraanzicht">Voor</button>
+                <button type="button" data-cam="top" title="Bovenaanzicht">Boven</button>
+                <button type="button" data-cam="fit" title="Alles in beeld">⤢</button>
+              </div>
+            </div>
+          </div>
+          <div id="busy" class="busy" hidden><span class="spinner"></span>Rekenen…</div>
+          <div class="stage-foot">
+            <div id="stats" class="stats"></div>
+            <div id="swatches" class="swatches" aria-label="Voorbeeldkleur"></div>
+          </div>
+        </section>
+        <aside class="panel output">
+          <div class="export">
+            <button id="export-3mf" class="primary" type="button">Download 3MF voor Bambu Studio</button>
+            <div class="export-row">
+              <button id="export-stl" class="ghost" type="button">STL (alles)</button>
+              <button id="share" class="ghost" type="button">Deel ontwerp</button>
+            </div>
+            <div id="plate-exports" class="plate-exports"></div>
+          </div>
+          <div id="warnings"></div>
+          <section class="info-block">
+            <h3>Onderdelen</h3>
+            <div id="parts"></div>
+          </section>
+          <div id="info"></div>
+          <div id="tips" class="tips"></div>
+        </aside>
+      </main>
+    </div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
