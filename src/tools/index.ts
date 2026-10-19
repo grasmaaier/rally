@@ -5,7 +5,9 @@ import { handlesTool } from './handles';
 import { jointsTool } from './joints';
 import { furnitureTool } from './furniture';
 import { planterTool } from './planter';
+import { clockTool } from './clock';
+import { toothbrushTool } from './toothbrush';
 
-export const TOOLS: ToolDef[] = [vaseTool, gridfinityTool, handlesTool, jointsTool, furnitureTool, planterTool];
+export const TOOLS: ToolDef[] = [vaseTool, planterTool, clockTool, handlesTool, gridfinityTool, jointsTool, furnitureTool, toothbrushTool];
 
 export const TOOL_MAP: Record<string, ToolDef> = Object.fromEntries(TOOLS.map((t) => [t.id, t]));

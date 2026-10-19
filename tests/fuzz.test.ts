@@ -1,7 +1,7 @@
 import { beforeAll, describe, expect, it } from 'vitest';
 import type { ManifoldToplevel } from 'manifold-3d';
 import { initManifold } from '../src/core/manifold';
-import { runBuild } from '../src/core/engine';
+import { buildTool } from './helpers';
 import { TOOLS } from '../src/tools';
 import { defaultsOf, type Params } from '../src/core/types';
 import { DEFAULT_PRINTER } from '../src/core/printer';
@@ -28,7 +28,7 @@ const SAMPLES = Number(process.env.FUZZ ?? 12);
  * or fail with a deliberate message for the user — never with a geometry-kernel error.
  */
 describe.each(TOOLS.map((t) => [t.id, t] as const))('fuzz %s', (_id, tool) => {
-  it(`${SAMPLES} willekeurige instellingen`, () => {
+  it(`${SAMPLES} willekeurige instellingen`, async () => {
     const rnd = mulberry32(tool.id.length * 7919 + 17);
     const failures: string[] = [];
     for (let i = 0; i < SAMPLES; i++) {
@@ -43,7 +43,7 @@ describe.each(TOOLS.map((t) => [t.id, t] as const))('fuzz %s', (_id, tool) => {
       try {
         if (process.env.FUZZ_LOG === '2') process.stderr.write(`START ${tool.id} ${JSON.stringify(params)}\n`);
         const t0 = performance.now();
-        const res = runBuild(M, tool, params, DEFAULT_PRINTER);
+        const res = await buildTool(M, tool, params, DEFAULT_PRINTER);
         const ms = performance.now() - t0;
         if (process.env.FUZZ_LOG && ms > 1500) process.stderr.write(`SLOW ${tool.id} ${Math.round(ms)}ms ${JSON.stringify(params)}\n`);
         for (const p of res.parts) if (!(p.volume > 0)) failures.push(`${JSON.stringify(params)} → leeg onderdeel ${p.name}`);

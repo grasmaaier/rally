@@ -1,4 +1,4 @@
-import type { NumberParam, ParamDef, Params, ParamValue } from '../core/types';
+import type { FileParam, NumberParam, ParamDef, Params, ParamValue } from '../core/types';
 
 export interface FormHandle {
   /** Re-evaluate visibility and push values into the controls. */
@@ -6,6 +6,13 @@ export interface FormHandle {
 }
 
 type Change = (key: string, value: ParamValue, final: boolean) => void;
+
+export interface FileHooks {
+  /** Read and register an uploaded file; resolves to its asset key. */
+  upload(def: FileParam, file: File): Promise<string>;
+  /** Display name for an asset key. */
+  label(key: string): string;
+}
 
 const decimals = (step: number) => (step >= 1 ? 0 : Math.min(3, Math.ceil(-Math.log10(step))));
 
@@ -57,7 +64,7 @@ function numberControl(d: NumberParam, onChange: Change) {
   };
 }
 
-export function buildForm(host: HTMLElement, defs: ParamDef[], params: Params, onChange: Change): FormHandle {
+export function buildForm(host: HTMLElement, defs: ParamDef[], params: Params, onChange: Change, files?: FileHooks): FormHandle {
   host.innerHTML = '';
   const rows: { def: ParamDef; el: HTMLElement; set?: (v: ParamValue) => void }[] = [];
   let section: HTMLElement = host;
@@ -101,6 +108,69 @@ export function buildForm(host: HTMLElement, defs: ParamDef[], params: Params, o
       sel.addEventListener('change', () => onChange(def.key, sel.value, true));
       row.append(label, sel);
       set = (v) => (sel.value = String(v));
+    } else if (def.type === 'text') {
+      const input = document.createElement('input');
+      input.type = 'text';
+      input.className = 'text-input';
+      input.id = `p-${def.key}`;
+      input.maxLength = def.maxLength ?? 120;
+      input.placeholder = def.placeholder ?? '';
+      input.autocomplete = 'off';
+      label.htmlFor = input.id;
+      let t: number | undefined;
+      input.addEventListener('input', () => {
+        window.clearTimeout(t);
+        t = window.setTimeout(() => onChange(def.key, input.value, true), 450);
+      });
+      input.addEventListener('change', () => {
+        window.clearTimeout(t);
+        onChange(def.key, input.value, true);
+      });
+      row.append(label, input);
+      set = (v) => {
+        if (document.activeElement !== input) input.value = String(v ?? '');
+      };
+    } else if (def.type === 'file') {
+      const wrap = document.createElement('div');
+      wrap.className = 'file-field';
+      const input = document.createElement('input');
+      input.type = 'file';
+      input.accept = def.accept;
+      input.id = `p-${def.key}`;
+      input.className = 'sr-only';
+      const pick = document.createElement('label');
+      pick.htmlFor = input.id;
+      pick.className = 'ghost small file-pick';
+      pick.textContent = 'Kies bestand…';
+      const name = document.createElement('span');
+      name.className = 'file-name';
+      const clear = document.createElement('button');
+      clear.type = 'button';
+      clear.className = 'ghost small';
+      clear.textContent = 'Wis';
+      clear.addEventListener('click', () => onChange(def.key, '', true));
+      const status = document.createElement('small');
+      status.className = 'file-status';
+      input.addEventListener('change', async () => {
+        const f = input.files?.[0];
+        input.value = '';
+        if (!f || !files) return;
+        status.textContent = 'Bezig met inlezen…';
+        try {
+          const key = await files.upload(def, f);
+          status.textContent = '';
+          onChange(def.key, key, true);
+        } catch (err) {
+          status.textContent = (err as Error).message;
+        }
+      });
+      wrap.append(input, pick, name, clear);
+      row.append(label, wrap, status);
+      set = (v) => {
+        const key = String(v ?? '');
+        name.textContent = key ? (files?.label(key) ?? key) : 'Geen bestand';
+        clear.hidden = !key;
+      };
     } else {
       const sw = document.createElement('input');
       sw.type = 'checkbox';
