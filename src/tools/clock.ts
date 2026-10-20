@@ -65,6 +65,9 @@ function numeralLabels(p: Params): { labels: string[]; start: number } {
   }
 }
 
+/** Horizontal scale of the numerals (1 = as drawn by the font). */
+const numWidth = (p: Params) => (p.numWidth === undefined ? 1 : num(p, 'numWidth') / 100);
+
 /** Angle (degrees, CCW from +X) of label i of n. */
 const labelAngle = (i: number, n: number, start: number) => 90 - (360 * (i + start)) / n;
 
@@ -216,13 +219,16 @@ function placeNumerals(M: ManifoldToplevel, p: Params, font: Font, geo: DialGeo,
   const H = (num(p, 'numSize') / 100) * geo.D;
   const fs = sizeForHeight(font, H);
   const radial = str(p, 'numOrient') === 'radial';
-  const follow = bool(p, 'follow');
+  // numerals that follow a round outline still sit on one circle
+  const follow = bool(p, 'follow') && geo.spec.shape !== 'circle';
+  const widthK = numWidth(p);
   const k = num(p, 'numPos') / 100;
   const margin = Math.max(1.5, 0.015 * geo.D);
   const missing: string[] = [];
   const items = labels.map((label, i) => {
     if (!label) return null;
-    const cs = textCross(M, font, label, fs);
+    let cs = textCross(M, font, label, fs);
+    if (Math.abs(widthK - 1) > 1e-3) cs = cs.scale([widthK, 1]);
     if (cs.isEmpty() || cs.area() < 0.01) {
       missing.push(label);
       return null;
@@ -254,10 +260,16 @@ function placeNumerals(M: ManifoldToplevel, p: Params, font: Font, geo: DialGeo,
     }
     return true;
   };
-  const steps = [1, 0.97, 1.03, 0.94, 1.06, 0.91, 0.88, 0.85];
-  const solve = (it: Item, sc: number) => {
+  const steps = [1, 0.98, 1.02, 0.96, 1.04, 0.94, 1.06, 0.92, 0.9, 0.88, 0.86, 0.84];
+  const solveOne = (it: Item, sc: number) => {
     for (const f of steps) if (fits(it, it.r0 * f, sc)) return it.r0 * f;
     return null;
+  };
+  /** Radii for all numerals: per numeral on shaped dials, one shared factor on a circle (keeps the ring even). */
+  const solve = (sc: number): (number | null)[] => {
+    if (follow) return items.map((it) => (it ? solveOne(it, sc) : 0));
+    for (const f of steps) if (items.every((it) => !it || fits(it, it.r0 * f, sc))) return items.map((it) => (it ? it.r0 * f : 0));
+    return items.map(() => null);
   };
   const place = (sc: number, rs: (number | null)[]) => {
     const out: PlacedLabel[] = [];
@@ -270,8 +282,8 @@ function placeNumerals(M: ManifoldToplevel, p: Params, font: Font, geo: DialGeo,
     });
     return out;
   };
-  // neighbouring numerals keep a small gap
-  const gapN = Math.max(1, 0.006 * geo.D);
+  // neighbouring numerals keep a clear gap
+  const gapN = Math.max(1.5, 0.01 * geo.D);
   const touching = (list: PlacedLabel[]) => {
     for (let i = 0; i < list.length && list.length > 1; i++) {
       const b = list[(i + 1) % list.length];
@@ -284,7 +296,7 @@ function placeNumerals(M: ManifoldToplevel, p: Params, font: Font, geo: DialGeo,
   let placed: PlacedLabel[] = [];
   let touch = false;
   for (let iter = 0; iter < 30; iter++) {
-    rs = items.map((it) => (it ? solve(it, sc) : 0));
+    rs = solve(sc);
     if (rs.every((r) => r !== null)) {
       placed = place(sc, rs);
       touch = touching(placed);
@@ -294,11 +306,19 @@ function placeNumerals(M: ManifoldToplevel, p: Params, font: Font, geo: DialGeo,
   }
   const failed = rs.some((r) => r === null);
   if (failed || !placed.length) placed = place(sc, rs);
-  const moved = items.some((it, i) => it && rs[i] !== null && Math.abs((rs[i] as number) - it.r0) > 0.01 * it.r0);
+  // small automatic shifts are part of the layout; only mention clear ones
+  const moved = items.some((it, i) => it && rs[i] !== null && Math.abs((rs[i] as number) - it.r0) > 0.07 * it.r0);
   if (failed) warnings.push('De cijfers passen niet goed op deze vorm; wat buiten de rand valt is afgesneden. Maak ze kleiner of zet ze dichter bij het midden.');
   else if (touch) warnings.push('De cijfers raken elkaar: maak ze kleiner of zet ze verder naar buiten.');
   else if (sc < 0.99) warnings.push(`De cijfers zijn verkleind tot ${Math.round(sc * 100)}% zodat ze binnen de rand en tussen de streepjes passen.`);
-  else if (moved) warnings.push('Een paar cijfers zijn iets verschoven zodat ze binnen de rand en los van de streepjes blijven.');
+  else if (moved) {
+    const first = items.findIndex((it) => it);
+    warnings.push(
+      follow
+        ? 'Een paar cijfers zijn verschoven zodat ze binnen de rand en los van de streepjes blijven.'
+        : `De cijfers staan op ${Math.round(rs[first] ?? 0)} mm van het midden (gevraagd: ${Math.round(items[first]?.r0 ?? 0)} mm) zodat ze binnen de rand en los van de streepjes blijven.`,
+    );
+  }
   let innerR = Infinity;
   items.forEach((it, i) => {
     if (!it) return;
@@ -525,14 +545,19 @@ function handInfo(hands: HandOut[]): InfoBlock {
 }
 
 /** Quartz movements have little torque: warn about heavy or unbalanced hands. */
-function torqueWarnings(hands: HandOut[], warnings: string[], tips: string[]) {
+function torqueWarnings(ctx: Ctx, hands: HandOut[]) {
+  const { warnings, tips } = ctx;
   const minute = hands.find((h) => h.kind === 'minute');
   const second = hands.find((h) => h.kind === 'second');
+  ctx.need = 'gewoon quartz-uurwerk';
   if (minute && minute.moment > 400) {
+    ctx.need = 'te zware wijzers';
     warnings.push(`De minutenwijzer is te zwaar (onbalans ${Math.round(minute.moment)} g·mm), zelfs voor een high-torque uurwerk. Maak hem smaller, dunner of korter, kies 'Skelet' of geef hem een langer staartje.`);
   } else if (minute && minute.moment > 120) {
+    ctx.need = 'high-torque uurwerk';
     warnings.push(`De minutenwijzer is zwaar (onbalans ${Math.round(minute.moment)} g·mm): gebruik een high-torque uurwerk, of maak de wijzer smaller/dunner.`);
   } else if (minute && minute.length > 150) {
+    ctx.need = 'high-torque uurwerk aanbevolen';
     tips.push('Lange wijzers: een high-torque uurwerk loopt betrouwbaarder.');
   }
   if (second && second.moment > 15) {
@@ -551,6 +576,8 @@ interface Ctx {
   warnings: string[];
   tips: string[];
   info: InfoBlock[];
+  /** which movement the hands need (set once hands are built) */
+  need?: string;
 }
 
 function checkBed(ctx: Ctx, cs: CrossSection, what: string) {
@@ -660,7 +687,7 @@ function colourTips(ctx: Ctx, d: DialPart, raised: boolean, depth: number) {
 
 /** Mode "Complete klok" and "Alleen wijzerplaat". */
 function buildDialModes(ctx: Ctx, withHands: boolean): BuildOutput {
-  const { M, p, warnings, tips, info } = ctx;
+  const { M, p, warnings, info } = ctx;
   const D = num(p, 'diameter');
   const rimOn = bool(p, 'rim');
   const geo = dialGeo(M, p, D, rimOn ? num(p, 'rimW') : 0, ctx.assets);
@@ -769,7 +796,7 @@ function buildDialModes(ctx: Ctx, withHands: boolean): BuildOutput {
     }
     if (hands.some((h) => h.kind === 'minute' && h.length > geo.ruMin + geo.inset + 2)) warnings.push('De minutenwijzer steekt buiten de wijzerplaat uit.');
     info.push(handInfo(hands));
-    torqueWarnings(hands, warnings, tips);
+    torqueWarnings(ctx, hands);
   }
   scene.push(sceneBox([-MOVEMENT.shaft / 2, -MOVEMENT.shaft / 2, mz], [MOVEMENT.shaft / 2, MOVEMENT.shaft / 2, top], lift, '#8aa0b8', 'ghost', 'As'));
   return { parts, scene, defaultView: 'assembly' };
@@ -777,7 +804,7 @@ function buildDialModes(ctx: Ctx, withHands: boolean): BuildOutput {
 
 /** Mode "Alleen wijzers": replacement hands for an existing clock. */
 function buildHandsMode(ctx: Ctx): BuildOutput {
-  const { M, p, warnings, tips, info } = ctx;
+  const { M, p, warnings, info } = ctx;
   const D = num(p, 'diameter');
   const R = D / 2;
   const hands = buildHands(M, p, R, holeSizes(p), ctx.assets, ctx.printer, warnings);
@@ -790,7 +817,7 @@ function buildHandsMode(ctx: Ctx): BuildOutput {
   placeHands(scene, hands, 0, world, z);
   scene.push(sceneBox([-MOVEMENT.size / 2, -MOVEMENT.size / 2, -MOVEMENT.depth], [MOVEMENT.size / 2, MOVEMENT.size / 2, 0], lift, '#8aa0b8', 'ghost', 'Uurwerk'));
   info.push(handInfo(hands));
-  torqueWarnings(hands, warnings, tips);
+  torqueWarnings(ctx, hands);
   return { parts: hands.map((h) => ({ name: h.name, solid: h.solid })), scene, defaultView: 'assembly' };
 }
 
@@ -851,7 +878,7 @@ function bridges(M: ManifoldToplevel, cs: CrossSection, H: number): CrossSection
     return { c: [(b.min[0] + b.max[0]) / 2, (b.min[1] + b.max[1]) / 2] as Vec2, counters: filled.subtract(c) };
   });
   info.sort((a, b) => a.c[0] - b.c[0]);
-  const w = Math.max(2.4, 0.12 * H);
+  const w = Math.max(3, 0.07 * H);
   const bars: CrossSection[] = [];
   for (let i = 0; i < info.length - 1; i++) {
     const [ax, ay] = info[i].c;
@@ -935,8 +962,9 @@ function buildWallMode(ctx: Ctx): BuildOutput {
     const fs = sizeForHeight(font, H);
     labels.forEach((label, i) => {
       if (!label) return;
-      const cs = textCross(M, font, label, fs);
+      let cs = textCross(M, font, label, fs);
       if (cs.isEmpty() || cs.area() < 0.01) return;
+      if (Math.abs(numWidth(p) - 1) > 1e-3) cs = cs.scale([numWidth(p), 1]);
       const angle = labelAngle(i, n, start);
       const th = deg(angle);
       const x = Rc * Math.cos(th);
@@ -1008,7 +1036,7 @@ function buildWallMode(ctx: Ctx): BuildOutput {
     for (const h of hands) parts.push({ name: h.name, solid: h.solid });
     top = z.top;
     info.push(handInfo(hands));
-    torqueWarnings(hands, warnings, tips);
+    torqueWarnings(ctx, hands);
   }
   scene.push(sceneBox([-MOVEMENT.shaft / 2, -MOVEMENT.shaft / 2, MOVEMENT.depth], [MOVEMENT.shaft / 2, MOVEMENT.shaft / 2, top], lift, '#8aa0b8', 'ghost', 'As'));
 
@@ -1047,6 +1075,8 @@ function buildFitMode(ctx: Ctx): BuildOutput {
   const step = num(p, 'fitStep');
   const count = Math.round(num(p, 'fitCount'));
   const deltas = Array.from({ length: count }, (_, i) => (i - (count - 1) / 2) * step);
+  const digits = step < 0.1 - 1e-9 ? 2 : 1;
+  const label = (v: number) => v.toFixed(digits).replace('.', ',');
   const T = num(p, 'handT');
   const parts: PartOut[] = [];
   const rows: (string | number)[][] = [];
@@ -1057,22 +1087,22 @@ function buildFitMode(ctx: Ctx): BuildOutput {
   };
   strip('Pasproef uurwijzer', 'UUR', (d) => {
     const v = Math.max(0.6, holes.hour + d);
-    return { label: nl(v), hole: holeCross(M, v), size: v };
+    return { label: label(v), hole: holeCross(M, v), size: v };
   }, T);
   strip('Pasproef minutenwijzer', 'MIN', (d) => {
     const v = Math.max(0.6, holes.minute + d);
-    return { label: nl(v), hole: holeCross(M, v, clamp(holes.minuteFlat + d, 0.4, v)), size: v };
+    return { label: label(v), hole: holeCross(M, v, clamp(holes.minuteFlat + d, 0.4, v)), size: v };
   }, T);
   if (bool(p, 'seconds')) {
     strip('Pasproef secondewijzer', 'SEC', (d) => {
       const v = Math.max(0.3, holes.second + d);
-      return { label: nl(v), hole: holeCross(M, v), size: v };
+      return { label: label(v), hole: holeCross(M, v), size: v };
     }, T);
   }
   if (bool(p, 'fitCenter')) {
     strip('Pasproef middengat', 'AS', (d) => {
       const v = Math.max(2, holes.center + 2 * d);
-      return { label: nl(v), hole: holeCross(M, v), size: v };
+      return { label: label(v), hole: holeCross(M, v), size: v };
     }, Math.min(3, num(p, 'dialT')));
   }
   info.push({ kind: 'table', title: 'Pasproef (gatmaten in mm)', headers: ['Strip', 'Gaten'], rows });
@@ -1099,6 +1129,7 @@ function build(p: Params, { M, assets, printer }: Parameters<ToolDef['build']>[1
         ['Gat uurwijzer', `Ø ${nl(holes.hour)} mm`],
         ['Gat minutenwijzer', `Ø ${nl(holes.minute)} mm, plat ${nl(holes.minuteFlat)} mm`],
         ['Gat secondewijzer', `Ø ${nl(holes.second)} mm`],
+        ...(ctx.need ? [['Nodig', ctx.need] as [string, string]] : []),
         ...(num(p, 'holeAdjust') !== 0 ? [['Correctie', `${num(p, 'holeAdjust') > 0 ? '+' : ''}${nl(num(p, 'holeAdjust'))} mm`] as [string, string]] : []),
       ],
     });
@@ -1198,7 +1229,8 @@ const params: ParamDef[] = [
   { type: 'select', key: 'googleWeight', label: 'Dikte letter', default: '700', options: WEIGHTS, show: (p) => usesNumeralsOrText(p) && str(p, 'font') === 'google' },
   { type: 'file', key: 'fontFile', label: 'Lettertypebestand', asset: 'font', accept: '.ttf,.otf,.woff', default: '', help: 'TTF, OTF of WOFF.', show: (p) => usesNumeralsOrText(p) && str(p, 'font') === 'upload' },
   { type: 'number', key: 'numSize', label: 'Hoogte cijfers', min: 2, max: 25, step: 0.5, unit: '%', default: 9, show: (p) => hasDialParams(p) && usesNumerals(p), help: 'In procenten van de diameter.' },
-  { type: 'number', key: 'numPos', label: 'Afstand tot het midden', min: 30, max: 100, step: 1, unit: '%', default: 76, show: (p) => hasDialParams(p) && usesNumerals(p), help: 'In procenten van de straal (tot het midden van het cijfer).' },
+  { type: 'number', key: 'numWidth', label: 'Breedte cijfers', min: 50, max: 150, step: 5, unit: '%', default: 100, show: usesNumerals, help: 'Kleiner = slanker, zoals de smalle Romeinse cijfers op klassieke klokken.' },
+  { type: 'number', key: 'numPos', label: 'Afstand tot het midden', min: 30, max: 100, step: 1, unit: '%', default: 70, show: (p) => hasDialParams(p) && usesNumerals(p), help: 'In procenten van de straal (tot het midden van het cijfer).' },
   {
     type: 'select', key: 'numOrient', label: 'Stand van de cijfers', default: 'upright', show: usesNumerals,
     options: [
@@ -1307,7 +1339,7 @@ export const clockTool: ToolDef = {
     {
       name: 'Klassiek Romeins',
       values: {
-        mode: 'clock', diameter: 260, font: 'bundled:cinzel', numerals: 'roman', romanFour: true, numOrient: 'radial', numSize: 9, numPos: 76,
+        mode: 'clock', diameter: 260, font: 'bundled:cinzel', numerals: 'roman', romanFour: true, numOrient: 'radial', numSize: 9, numWidth: 70, numPos: 76,
         rim: true, rimW: 6, rimH: 2.4, hourTicks: 'line', hourTickL: 6, hourTickW: 1.6, minuteTicks: 'line', minuteTickL: 3.5, tickPos: 97, track: true,
         handStyle: 'breguet', handW: 6, hourLen: 52, minLen: 82, secStyle: 'ring', secLen: 86,
       },
@@ -1329,8 +1361,8 @@ export const clockTool: ToolDef = {
     {
       name: 'Kinderkamer blob klok',
       values: {
-        mode: 'clock', diameter: 230, dialShape: 'blob', dialCount: 3, dialDepth: 14, dialSeed: 12, font: 'bundled:fredoka', numerals: 'arabic', numSize: 11,
-        numPos: 74, hourTicks: 'dot', hourTickL: 8, tickPos: 95, minuteTicks: 'none', handStyle: 'lolly', handW: 8, hourLen: 50, minLen: 78,
+        mode: 'clock', diameter: 230, dialShape: 'blob', dialCount: 3, dialDepth: 14, dialSeed: 21, font: 'bundled:fredoka', numerals: 'arabic', numSize: 10,
+        numPos: 72, hourTicks: 'dot', hourTickL: 8, tickPos: 95, minuteTicks: 'none', handStyle: 'lolly', handW: 8, hourLen: 50, minLen: 78,
         label: 'TIK TAK', labelPos: 'bottom', labelSize: 6, reliefH: 1.6, seconds: false,
       },
     },
@@ -1345,7 +1377,7 @@ export const clockTool: ToolDef = {
       name: 'Losse cijfers wandklok',
       values: {
         mode: 'wall', font: 'bundled:dm-serif-display', numerals: 'quarters', wallD: 600, wallNumH: 70, wallT: 6, wallBacking: 'bridge', wallMount: 'tape',
-        hourTicks: 'dot', centerD: 100, dialT: 4, handStyle: 'baton', handW: 7, tail: 12, hourLen: 55, minLen: 82, seconds: false,
+        hourTicks: 'dot', centerD: 100, dialT: 4, handStyle: 'baton', handW: 5, handT: 1.4, tail: 20, hourLen: 48, minLen: 70, seconds: false,
       },
     },
     {
