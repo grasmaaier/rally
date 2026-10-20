@@ -1,7 +1,8 @@
-import type { ToolDef, Params, BuildOutput, ParamDef } from '../core/types';
+import type { ToolDef, Params, BuildOutput, ParamDef, AssetRef, AssetStore } from '../core/types';
 import { UserError, bool, num, str } from '../core/types';
-import { shapeSurface, solidOfSurface, shellOfSurface, insetSurface, limitWaves, resolutionFor, type Section, type ShapeOptions } from '../geom/surface';
+import { CLASSIC_SECTIONS, buildShape, solidOfSurface, shellOfSurface, insetSurface, type ShapeBuild, type ShapeOptions } from '../geom/surface';
 import { TAU } from '../geom/helpers';
+import { SHAPE_USES, effectiveSpec, radialShape, type ShapeSpec } from '../geom/shapes2d';
 
 export const SECTION_OPTIONS = [
   { value: 'round', label: 'Rond' },
@@ -10,20 +11,77 @@ export const SECTION_OPTIONS = [
   { value: 'star', label: 'Ster' },
   { value: 'scallop', label: 'Schelp' },
   { value: 'gear', label: 'Kantelen' },
+  { value: 'petals', label: 'Bloemblaadjes' },
+  { value: 'squircle', label: 'Zachte rechthoek' },
+  { value: 'cross', label: 'Kruis' },
+  { value: 'clover', label: 'Klaver' },
+  { value: 'cloud', label: 'Wolk' },
+  { value: 'blob', label: 'Blob (organisch)' },
+  { value: 'heart', label: 'Hart' },
+  { value: 'drop', label: 'Druppel' },
+  { value: 'leaf', label: 'Blad' },
+  { value: 'superformula', label: 'Superformule (abstract)' },
+  { value: 'custom', label: 'Eigen vorm (SVG uploaden)' },
 ];
+
+export const PROFILE_OPTIONS = [
+  { value: 'smooth', label: 'Glad (vloeiend)' },
+  { value: 'terraced', label: 'Getrapt (terrassen)' },
+  { value: 'bubbles', label: 'Bollen (gestapeld)' },
+  { value: 'wavy', label: 'Golvende ringen' },
+  { value: 'facet', label: 'Facetten / kristal' },
+];
+
+type Use = 'count' | 'depth' | 'rounding' | 'seed' | 'sf' | 'file';
+const CLASSIC_USES: Record<string, Use[]> = {
+  round: [],
+  polygon: ['count', 'rounding'],
+  flower: ['count', 'depth'],
+  star: ['count', 'depth'],
+  scallop: ['count', 'depth'],
+  gear: ['count', 'depth'],
+};
+const uses = (p: Params, what: Use) => (CLASSIC_USES[str(p, 'section')] ?? SHAPE_USES[str(p, 'section')] ?? []).includes(what);
+
+/** Mesh segments around that the library sections need to stay crisp. */
+const SECTION_SEGS: Record<string, (n: number) => number> = {
+  petals: (n) => n * 18,
+  squircle: () => 192,
+  blob: () => 240,
+  superformula: () => 540,
+};
+
+/** Periodic lookup table of a radial function: library shapes trace rays, so evaluate them once. */
+function tabulate(fn: (th: number) => number, n = 4096): (th: number) => number {
+  const t = new Float64Array(n + 1);
+  for (let i = 0; i < n; i++) t[i] = fn((TAU * i) / n);
+  t[n] = t[0];
+  return (th) => {
+    let x = ((th / TAU) % 1) * n;
+    if (x < 0) x += n;
+    const i = Math.min(n - 1, Math.floor(x));
+    return t[i] + (t[i + 1] - t[i]) * (x - i);
+  };
+}
 
 /** Shared shape controls (also used by the plant pot tool). */
 export function shapeParams(defaults: { section?: string; count?: number; depth?: number }): ParamDef[] {
-  const patterned = (p: Params) => str(p, 'section') !== 'round';
+  const shaped = (p: Params) => str(p, 'profile') !== 'smooth';
   return [
     { type: 'group', label: 'Doorsnede' },
     { type: 'select', key: 'section', label: 'Vorm', options: SECTION_OPTIONS, default: defaults.section ?? 'round' },
-    { type: 'number', key: 'count', label: 'Aantal zijden / lobben', min: 3, max: 48, step: 1, default: defaults.count ?? 6, show: patterned },
+    { type: 'number', key: 'count', label: 'Aantal (zijden / lobben / armen)', min: 3, max: 48, step: 1, default: defaults.count ?? 6, show: (p) => uses(p, 'count') },
+    { type: 'number', key: 'depth', label: 'Diepte patroon', min: 0, max: 90, step: 1, unit: '%', default: defaults.depth ?? 12, show: (p) => uses(p, 'depth') },
+    { type: 'number', key: 'rounding', label: 'Afronding', min: 0, max: 100, step: 1, unit: '%', default: 30, show: (p) => uses(p, 'rounding') },
+    { type: 'number', key: 'seed', label: 'Variant vorm', min: 1, max: 999, step: 1, default: 7, show: (p) => uses(p, 'seed') },
+    { type: 'number', key: 'sfM', label: 'Superformule m (symmetrie)', min: 0, max: 24, step: 1, default: 6, show: (p) => uses(p, 'sf') },
+    { type: 'number', key: 'sfN1', label: 'Superformule n1 (bolling)', min: 0.2, max: 20, step: 0.1, default: 1, show: (p) => uses(p, 'sf') },
+    { type: 'number', key: 'sfN2', label: 'Superformule n2', min: 0.2, max: 20, step: 0.1, default: 1.7, show: (p) => uses(p, 'sf') },
+    { type: 'number', key: 'sfN3', label: 'Superformule n3', min: 0.2, max: 20, step: 0.1, default: 1.7, show: (p) => uses(p, 'sf') },
     {
-      type: 'number', key: 'depth', label: 'Diepte patroon', min: 0, max: 60, step: 1, unit: '%', default: defaults.depth ?? 12,
-      show: (p) => patterned(p) && str(p, 'section') !== 'polygon',
+      type: 'file', key: 'sectionFile', label: 'SVG-bestand', asset: 'shape', accept: '.svg,image/svg+xml', default: '',
+      help: 'Een gevulde vorm. De buitencontour (gezien vanuit het midden) wordt de doorsnede.', show: (p) => uses(p, 'file'),
     },
-    { type: 'number', key: 'rounding', label: 'Afronding hoeken', min: 0, max: 100, step: 1, unit: '%', default: 30, show: (p) => str(p, 'section') === 'polygon' },
     { type: 'group', label: 'Draaiing & golven' },
     { type: 'number', key: 'twist', label: 'Draaiing', min: -720, max: 720, step: 5, unit: '°', default: 0 },
     {
@@ -37,14 +95,49 @@ export function shapeParams(defaults: { section?: string; count?: number; depth?
     { type: 'number', key: 'twistWaves', label: 'Aantal keer heen-en-weer', min: 1, max: 8, step: 1, default: 2, show: (p) => num(p, 'twist') !== 0 && str(p, 'twistMode') === 'wave' },
     { type: 'number', key: 'waveAmp', label: 'Horizontale golven', min: 0, max: 20, step: 0.5, unit: '%', default: 0 },
     { type: 'number', key: 'waveFreq', label: 'Aantal golven', min: 1, max: 30, step: 1, default: 4, show: (p) => num(p, 'waveAmp') > 0 },
+    { type: 'group', label: 'Abstract & organisch' },
+    { type: 'select', key: 'profile', label: 'Profielstijl', options: PROFILE_OPTIONS, default: 'smooth' },
+    { type: 'number', key: 'profileCount', label: 'Aantal treden / bollen / ringen / facetten', min: 1, max: 30, step: 1, default: 6, show: shaped },
+    { type: 'number', key: 'profileDepth', label: 'Diepte profielstijl', min: 0, max: 90, step: 1, unit: '%', default: 35, show: shaped },
+    {
+      type: 'number', key: 'organic', label: 'Organische vervorming', min: 0, max: 40, step: 1, unit: '%', default: 0,
+      help: 'Zachte, willekeurige deuken en bulten. Te steile stukken worden automatisch afgezwakt.',
+    },
+    { type: 'number', key: 'organicScale', label: 'Grootte van de bulten', min: 10, max: 150, step: 1, unit: 'mm', default: 45, show: (p) => num(p, 'organic') > 0 },
+    { type: 'number', key: 'organicSeed', label: 'Variant', min: 1, max: 999, step: 1, default: 7, show: (p) => num(p, 'organic') > 0 || str(p, 'profile') === 'facet' },
   ];
 }
 
-export function shapeOptionsFrom(p: Params, height: number, radii: number[]): ShapeOptions {
+const get = (p: Params, k: string, d: number) => (p[k] === undefined || p[k] === '' ? d : num(p, k));
+const getS = (p: Params, k: string, d: string) => (p[k] === undefined ? d : str(p, k));
+
+/** The cross-section as a shape-library spec (for sections beyond the classic six). */
+function sectionSpec(p: Params): ShapeSpec {
   return {
+    shape: str(p, 'section'),
+    count: get(p, 'count', 6),
+    depth: get(p, 'depth', 12) / 100,
+    rounding: get(p, 'rounding', 30) / 100,
+    seed: get(p, 'seed', 7),
+    m: get(p, 'sfM', 6),
+    n1: get(p, 'sfN1', 1),
+    n2: get(p, 'sfN2', 1.7),
+    n3: get(p, 'sfN3', 1.7),
+    file: p.sectionFile ? str(p, 'sectionFile') : undefined,
+  };
+}
+
+/** Assets the section needs (an uploaded SVG). */
+export function sectionAssets(p: Params): AssetRef[] {
+  return str(p, 'section') === 'custom' && p.sectionFile ? [{ kind: 'shape', key: str(p, 'sectionFile') }] : [];
+}
+
+export function shapeOptionsFrom(p: Params, height: number, radii: number[], assets?: AssetStore): ShapeOptions {
+  const section = str(p, 'section');
+  const o: ShapeOptions = {
     height,
     radii,
-    section: str(p, 'section') as Section,
+    section,
     count: num(p, 'count'),
     depth: num(p, 'depth') / 100,
     rounding: num(p, 'rounding') / 100,
@@ -53,7 +146,31 @@ export function shapeOptionsFrom(p: Params, height: number, radii: number[]): Sh
     twistWaves: num(p, 'twistWaves'),
     waveAmp: num(p, 'waveAmp') / 100,
     waveFreq: num(p, 'waveFreq'),
+    profile: getS(p, 'profile', 'smooth'),
+    profileCount: get(p, 'profileCount', 6),
+    profileDepth: get(p, 'profileDepth', 35) / 100,
+    organic: get(p, 'organic', 0) / 100,
+    organicScale: get(p, 'organicScale', 45),
+    seed: get(p, 'organicSeed', 7),
   };
+  if (!CLASSIC_SECTIONS.includes(section)) {
+    const spec = effectiveSpec(sectionSpec(p));
+    o.sectionR = tabulate(radialShape(spec, assets));
+    o.sectionSegs = SECTION_SEGS[spec.shape]?.(Math.round(spec.count)) ?? 360;
+  }
+  return o;
+}
+
+/** Warnings about what was toned down to keep the walls printable. */
+export function shapeNotes(b: ShapeBuild): string[] {
+  const out: string[] = [];
+  if (b.limited) out.push(`Golven afgezwakt tot ${(b.opts.waveAmp * 100).toFixed(1)}%: steilere golven hangen te ver over om te printen. Gebruik minder golven voor meer diepte.`);
+  if (b.kept < 1) {
+    const what = (b.opts.organic ?? 0) > 0 ? (b.opts.profile === 'wavy' ? 'Organische vervorming en golvende ringen' : 'Organische vervorming') : 'Golvende ringen';
+    out.push(`${what} afgezwakt tot ${Math.round(b.kept * 100)}% zodat de wand nergens verder dan ~55° overhangt. Kies grotere bulten of minder ringen voor meer diepte.`);
+  }
+  if (b.steepest > 1.75) out.push('Let op: het profiel loopt op sommige plekken steiler uit dan 60°. Maak de diameters geleidelijker of print met support.');
+  return out;
 }
 
 const FITTINGS: Record<string, { hole: number; bulb: number; label: string }> = {
@@ -63,16 +180,17 @@ const FITTINGS: Record<string, { hole: number; bulb: number; label: string }> = 
 
 const QUALITY: Record<string, number> = { draft: 0.6, normal: 1, fine: 1.5 };
 
-function build(p: Params, { M, printer }: Parameters<ToolDef['build']>[1]): BuildOutput {
+function build(p: Params, { M, printer, assets }: Parameters<ToolDef['build']>[1]): BuildOutput {
   const mode = str(p, 'mode');
   const H = num(p, 'height');
   const radii = ['d0', 'd1', 'd2', 'd3'].map((k) => num(p, k) / 2);
-  const { opts, limited } = limitWaves(shapeOptionsFrom(p, H, radii));
-  const S = shapeSurface(opts);
-  let { segs, rings } = resolutionFor(opts, QUALITY[str(p, 'quality')] ?? 1);
+  const shape = buildShape(shapeOptionsFrom(p, H, radii, assets), QUALITY[str(p, 'quality')] ?? 1);
+  const { S } = shape;
+  let { segs, rings, zs } = shape;
   if (bool(p, 'lowPoly')) {
     segs = Math.round(num(p, 'facetsAround'));
     rings = Math.round(num(p, 'facetsUp')) + 1;
+    zs = undefined;
   }
   const tips: string[] = [];
   const warnings: string[] = [];
@@ -91,7 +209,7 @@ function build(p: Params, { M, printer }: Parameters<ToolDef['build']>[1]): Buil
 
   let solid;
   if (mode === 'vase') {
-    solid = solidOfSurface(M, S, 0, H, segs, rings);
+    solid = solidOfSurface(M, S, 0, H, segs, rings, zs);
     tips.push(
       'Bambu Studio: zet bij "Overige" de optie "Spiraalvaas" (vase mode) aan. De slicer maakt dan zelf één doorlopende wand.',
       'Voor een stevigere vaas: gebruik een 0.6 mm nozzle of zet de lijnbreedte op ~0.8 mm.',
@@ -102,14 +220,14 @@ function build(p: Params, { M, printer }: Parameters<ToolDef['build']>[1]): Buil
     const inner = insetSurface(S, wall);
     if (mode === 'walled') {
       const bottom = num(p, 'bottom');
-      solid = shellOfSurface(M, S, inner, { z0: 0, z1: H, floor: bottom, segs, rings });
+      solid = shellOfSurface(M, S, inner, { z0: 0, z1: H, floor: bottom, segs, rings, zs });
       tips.push(`Wand ${wall} mm: zet "Wandlussen" op ${Math.max(2, Math.round(wall / 0.42))} en infill op 0% voor een volledig massieve wand.`);
     } else {
       const fit = FITTINGS[str(p, 'fitting')];
       const holeD = fit ? fit.hole : num(p, 'holeD');
       const ringW = num(p, 'ringWidth');
       const th = num(p, 'spiderThickness');
-      const shell = shellOfSurface(M, S, inner, { z0: 0, z1: H, floor: null, segs, rings });
+      const shell = shellOfSurface(M, S, inner, { z0: 0, z1: H, floor: null, segs, rings, zs });
       const ringR = holeD / 2 + ringW;
       if (ringR > minBottomR - wall - 2) {
         throw new UserError(`De lampring (Ø${(ringR * 2).toFixed(0)} mm) past niet in de onderopening — maak de onderkant breder of de ring smaller.`);
@@ -121,7 +239,7 @@ function build(p: Params, { M, printer }: Parameters<ToolDef['build']>[1]): Buil
       for (let i = 0; i < n; i++) {
         pieces.push(M.Manifold.cube([reach, sw, th]).translate([0, -sw / 2, 0]).rotate([0, 0, (360 * i) / n]));
       }
-      const outerSolid = solidOfSurface(M, S, 0, H, segs, rings);
+      const outerSolid = solidOfSurface(M, S, 0, H, segs, rings, zs);
       const spider = M.Manifold.union(pieces)
         .intersect(outerSolid)
         .subtract(M.Manifold.cylinder(th + 2, holeD / 2, holeD / 2, 96).translate([0, 0, -1]));
@@ -144,7 +262,8 @@ function build(p: Params, { M, printer }: Parameters<ToolDef['build']>[1]): Buil
     }
   }
 
-  if (limited) warnings.push(`Golven afgezwakt tot ${(opts.waveAmp * 100).toFixed(1)}%: steilere golven hangen te ver over om te printen. Gebruik minder golven voor meer diepte.`);
+  warnings.push(...shapeNotes(shape));
+  if (str(p, 'profile') === 'terraced' || str(p, 'profile') === 'facet') tips.push('De treden en facetten lopen schuin af onder 45° of steiler: ze printen zonder support, ook in vase mode.');
   const footprint = maxR * 2;
   info.push({
     kind: 'kv',
@@ -153,7 +272,7 @@ function build(p: Params, { M, printer }: Parameters<ToolDef['build']>[1]): Buil
       ['Hoogte', `${H.toFixed(0)} mm`],
       ['Grootste diameter', `${footprint.toFixed(0)} mm`],
       ['Opening boven', `Ø ${(minTopR * 2).toFixed(0)} mm`],
-      ['Resolutie', `${segs} × ${rings}`],
+      ['Resolutie', `${segs} × ${zs ? rings + zs.length : rings}`],
     ],
   });
   if (footprint > Math.min(printer.x, printer.y) - 10) warnings.push(`Te breed voor de ${printer.name}.`);
@@ -167,13 +286,14 @@ function build(p: Params, { M, printer }: Parameters<ToolDef['build']>[1]): Buil
 }
 
 const rnd = (a: number, b: number, step = 1) => Math.round((a + Math.random() * (b - a)) / step) * step;
+const pick = <T,>(xs: T[]) => xs[Math.floor(Math.random() * xs.length)];
 
 export const vaseTool: ToolDef = {
   id: 'vaas',
   name: 'Vazen & lampenkappen',
   short: 'Vazen',
   icon: 'M8 3h8M9 3c0 3-4 5-4 10a7 7 0 0 0 14 0c0-5-4-7-4-10M7 21h10',
-  description: 'Parametrische vazen en lampenkappen: profiel, doorsnede, draaiing en golven. Klaar voor vase mode of met echte wand en E27/E14-fitting.',
+  description: 'Parametrische vazen en lampenkappen: profiel, doorsnede (ook wolk, blob, superformule of je eigen SVG), draaiing, golven en organische vervormingen. Klaar voor vase mode of met echte wand en E27/E14-fitting.',
   params: [
     { type: 'group', label: 'Type' },
     {
@@ -231,12 +351,20 @@ export const vaseTool: ToolDef = {
     { name: 'Hanglamp bol', values: { mode: 'lamp', height: 190, d0: 110, d1: 250, d2: 270, d3: 160, section: 'flower', count: 18, depth: 7, twist: 90, twistMode: 'ease', wall: 1.2, fitting: 'e27', lowPoly: false } },
     { name: 'Lampenkap kegel', values: { mode: 'lamp', height: 170, d0: 120, d1: 170, d2: 220, d3: 270, section: 'polygon', count: 9, rounding: 40, twist: 40, wall: 1.2, fitting: 'e27', lowPoly: false } },
     { name: 'Pennenbak', values: { mode: 'walled', height: 100, d0: 80, d1: 82, d2: 84, d3: 86, section: 'polygon', count: 6, rounding: 25, twist: 30, wall: 2, bottom: 2.4, lowPoly: false } },
+    { name: 'Wolkvaas', values: { mode: 'vase', height: 190, d0: 100, d1: 145, d2: 135, d3: 105, section: 'cloud', count: 7, depth: 50, seed: 4, twist: 40, twistMode: 'ease', waveAmp: 0, lowPoly: false } },
+    { name: 'Superformule vaas', values: { mode: 'vase', height: 210, d0: 90, d1: 130, d2: 120, d3: 95, section: 'superformula', sfM: 5, sfN1: 2, sfN2: 7, sfN3: 7, twist: 72, twistMode: 'linear', waveAmp: 0, lowPoly: false } },
+    { name: 'Getrapte vaas', values: { mode: 'vase', height: 200, d0: 85, d1: 135, d2: 120, d3: 80, section: 'polygon', count: 8, rounding: 45, twist: 0, waveAmp: 0, profile: 'terraced', profileCount: 7, profileDepth: 45, lowPoly: false } },
+    { name: 'Organische blob vaas', values: { mode: 'vase', height: 200, d0: 95, d1: 135, d2: 125, d3: 90, section: 'blob', count: 4, depth: 35, seed: 11, twist: 0, waveAmp: 0, organic: 14, organicScale: 55, organicSeed: 3, lowPoly: false } },
+    { name: 'Bollenvaas', values: { mode: 'vase', height: 210, d0: 95, d1: 120, d2: 115, d3: 90, section: 'flower', count: 10, depth: 6, twist: 30, twistMode: 'linear', waveAmp: 0, profile: 'bubbles', profileCount: 4, profileDepth: 30, lowPoly: false } },
+    { name: 'Kristalvaas', values: { mode: 'vase', height: 200, d0: 90, d1: 130, d2: 125, d3: 95, section: 'polygon', count: 7, rounding: 0, twist: 35, twistMode: 'linear', waveAmp: 0, profile: 'facet', profileCount: 5, profileDepth: 30, organicSeed: 5, lowPoly: false } },
+    { name: 'Golvende ringen', values: { mode: 'vase', height: 190, d0: 100, d1: 120, d2: 120, d3: 100, section: 'round', twist: 0, waveAmp: 0, profile: 'wavy', profileCount: 9, profileDepth: 55, lowPoly: false } },
   ],
   randomize: () => {
-    const sections = ['round', 'polygon', 'flower', 'star', 'scallop', 'gear'];
-    const section = sections[Math.floor(Math.random() * sections.length)];
-    const lowPoly = Math.random() < 0.15;
+    const section = Math.random() < 0.45 ? pick(['round', 'polygon', 'flower', 'star', 'scallop', 'gear']) : pick(['petals', 'squircle', 'cross', 'clover', 'cloud', 'blob', 'heart', 'drop', 'leaf', 'superformula']);
+    const lowPoly = Math.random() < 0.12;
     const base = rnd(60, 130);
+    const profile = Math.random() < 0.55 ? 'smooth' : pick(['terraced', 'bubbles', 'wavy', 'facet']);
+    const depthMax: Record<string, number> = { star: 25, cross: 60, clover: 60, cloud: 70, blob: 60, petals: 40, leaf: 50 };
     return {
       height: rnd(120, 260),
       d0: base,
@@ -244,18 +372,30 @@ export const vaseTool: ToolDef = {
       d2: Math.min(300, base + rnd(-20, 60)),
       d3: Math.max(40, base + rnd(-30, 40)),
       section,
-      count: section === 'polygon' ? rnd(3, 10) : rnd(5, 24),
-      depth: rnd(4, section === 'star' ? 25 : 16),
+      count: section === 'polygon' ? rnd(3, 10) : section === 'cross' ? rnd(3, 6) : section === 'blob' ? rnd(3, 6) : rnd(5, 16),
+      depth: rnd(4, depthMax[section] ?? 16),
       rounding: rnd(0, 70),
-      twist: Math.random() < 0.7 ? rnd(-240, 240, 5) : 0,
-      twistMode: ['linear', 'ease', 'wave'][Math.floor(Math.random() * 3)],
+      seed: rnd(1, 999),
+      sfM: rnd(3, 9),
+      sfN1: pick([0.5, 1, 2, 4]),
+      sfN2: rnd(1, 8, 0.5),
+      sfN3: rnd(1, 8, 0.5),
+      twist: Math.random() < 0.6 ? rnd(-240, 240, 5) : 0,
+      twistMode: pick(['linear', 'ease', 'wave']),
       twistWaves: rnd(1, 4),
-      waveAmp: Math.random() < 0.3 ? rnd(2, 8, 0.5) : 0,
+      waveAmp: profile === 'smooth' && Math.random() < 0.25 ? rnd(2, 8, 0.5) : 0,
       waveFreq: rnd(2, 8),
+      profile,
+      profileCount: rnd(3, 9),
+      profileDepth: rnd(20, 60),
+      organic: Math.random() < 0.3 ? rnd(5, 20) : 0,
+      organicScale: rnd(30, 80),
+      organicSeed: rnd(1, 999),
       lowPoly,
       facetsAround: rnd(7, 14),
       facetsUp: rnd(4, 9),
     };
   },
+  assets: sectionAssets,
   build,
 };
