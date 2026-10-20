@@ -430,6 +430,15 @@ function designKnob(M: ManifoldToplevel, p: Params, assets?: AssetStore) {
       return rn <= footR ? lerp(footR, rn, smoothstep(0.08, 0.75, t)) : Math.min(rn, footR + Math.max(0, z - 1.6));
     };
     stem = stemOf(M, neck, zFlat + 0.6, 'up');
+    // where the head is narrower than the flaring neck (between cross arms, petals), keep the
+    // flare inside the outline so no ledge of the stem shows
+    const zCut = zApex - tq;
+    if (neck(zFlat + 0.6) > dC - 0.5) {
+      const ring = R.map((r, j) => [r * Math.cos((TAU * j) / N), r * Math.sin((TAU * j) / N)] as Vec2);
+      const inner = radiiOf(keep(new M.CrossSection([ring])).offset(-0.5, 'Round', 2, 32), N);
+      const prism = gridSolid(M, polarGrid(inner, [1]), () => zFlat + 2, () => zCut - 0.3);
+      stem = M.Manifold.union([stem.trimByPlane([0, 0, -1], -zCut), stem.intersect(prism)]);
+    }
     let lowest = Infinity;
     const lay = layers[0];
     for (let k = 0; k < 1 + lay.g.s.length * N; k++) if (lay.g.rho[k] <= holeR + 1.5) lowest = Math.min(lowest, lay.z0 + lay.top(k));
@@ -869,7 +878,7 @@ export const handlesTool: ToolDef = {
   name: 'Knoppen & grepen',
   short: 'Grepen',
   icon: 'M5 15V11a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2v4M8 9V7M16 9V7M3 15h18',
-  description: 'Parametrische meubelknoppen en -grepen met standaard gatafstanden (64–320 mm) en gaten voor M3/M4/M5 schroeven, moeren of inzetmoeren.',
+  description: 'Meubelknoppen en -grepen met standaard gatafstanden (64–320 mm) en gaten voor M3/M4/M5 schroeven, moeren of inzetmoeren. Ook speelse knoppen (kruis, bloem, blob, kiezel, donut of je eigen SVG) en gedraaide, golvende of organische grepen.',
   params: [
     { type: 'group', label: 'Type' },
     {
@@ -1037,7 +1046,43 @@ export const handlesTool: ToolDef = {
     { name: 'Boog 96', values: { type: 'arch', spacing: '96', archShape: 'arch', clearance: 26, archT: 10, archW: 12 } },
     { name: 'Beugel 128', values: { type: 'arch', spacing: '128', archShape: 'square', clearance: 28, archT: 9, archW: 14, cornerR: 10 } },
     { name: 'Schelpgreep 96', values: { type: 'cup', spacing: '96', cupDepth: 18, cupMargin: 9 } },
+    { name: 'Kruisknop', values: { type: 'knob', style: 'cross', knobD: 34, knobH: 26, baseD: 18, neckD: 13, headH: 9, puff: 70, edge: 3, headCount: 4, headDepth: 62, headRounding: 100, headAngle: 45 } },
+    { name: 'Bloemknop', values: { type: 'knob', style: 'bloom', knobD: 36, knobH: 28, baseD: 18, neckD: 13, headH: 12, puff: 60, edge: 3, headCount: 5, headDepth: 55, headRounding: 70, headAngle: 90 } },
+    { name: 'Blobknop', values: { type: 'knob', style: 'blob', knobD: 34, knobH: 26, baseD: 18, neckD: 13, headH: 10, puff: 85, edge: 3, headCount: 4, headDepth: 50, headSeed: 12 } },
+    { name: 'Kiezelknop', values: { type: 'knob', style: 'pebble', knobD: 36, knobH: 25, baseD: 18, neckD: 13, headH: 11, puff: 90, edge: 3, headDepth: 40, headSeed: 5 } },
+    { name: 'Sterknop', values: { type: 'knob', style: 'star', knobD: 36, knobH: 26, baseD: 18, neckD: 13, headH: 9, puff: 55, edge: 3, headCount: 5, headDepth: 38, headRounding: 80, headAngle: 90 } },
+    { name: 'Hartknop', values: { type: 'knob', style: 'heart', knobD: 34, knobH: 26, baseD: 18, neckD: 13, headH: 10, puff: 70, edge: 3 } },
+    { name: 'Wolkknop', values: { type: 'knob', style: 'cloud', knobD: 38, knobH: 26, baseD: 18, neckD: 13, headH: 10, puff: 75, edge: 3, headCount: 6, headDepth: 45, headSeed: 4 } },
+    { name: 'Donutknop', values: { type: 'knob', style: 'ring', knobD: 34, knobH: 26, baseD: 18, neckD: 13, headH: 10, ringHole: 40 } },
+    { name: 'Tandwielknop (vlak)', values: { type: 'knob', style: 'gear', knobD: 36, knobH: 24, baseD: 20, neckD: 14, headH: 8, puff: 0, edge: 1.5, headCount: 9, headDepth: 22 } },
+    { name: 'Klaverknop (vlak)', values: { type: 'knob', style: 'clover', knobD: 36, knobH: 24, baseD: 20, neckD: 14, headH: 8, puff: 0, edge: 2.5, headCount: 4, headDepth: 35, headAngle: 45 } },
+    { name: 'Gedraaide staaf 128', values: { type: 'bar', barStyle: 'twisted', spacing: '128', overhang: 18, barD: 14, standoff: 22, postD: 12, twistSection: 'square', barTwist: 180 } },
+    { name: 'Gedraaide ster 160', values: { type: 'bar', barStyle: 'twisted', spacing: '160', overhang: 20, barD: 16, standoff: 22, postD: 12, twistSection: 'star', barTwist: 360 } },
+    { name: 'Golvende greep 128', values: { type: 'bar', barStyle: 'wavy', spacing: '128', overhang: 20, barD: 12, standoff: 24, postD: 12, waves: 1, waveAmp: 9 } },
+    { name: 'Botgreep 96', values: { type: 'bar', barStyle: 'bone', spacing: '96', overhang: 16, barD: 12, standoff: 24, postD: 12, boneSize: 160 } },
+    { name: 'Takgreep 160', values: { type: 'bar', barStyle: 'branch', spacing: '160', overhang: 22, barD: 16, standoff: 22, postD: 12, branchKnots: 60, branchSeed: 12 } },
+    { name: 'Golfbeugel 128', values: { type: 'arch', spacing: '128', archShape: 'wave', clearance: 26, archT: 10, archW: 14, archWave: 9 } },
+    { name: 'Lusgreep 96', values: { type: 'arch', spacing: '96', archShape: 'loop', clearance: 26, archT: 9, archW: 12, loopD: 28 } },
   ],
+  randomize: () => {
+    const r = (a: number, b: number, step = 1) => Math.round((a + Math.random() * (b - a)) / step) * step;
+    const pick = <T,>(xs: T[]) => xs[Math.floor(Math.random() * xs.length)];
+    const type = pick(['knob', 'knob', 'knob', 'bar', 'arch']);
+    if (type === 'knob')
+      return {
+        type, style: pick(DESIGN_STYLES.filter((s) => s.value !== 'custom').map((s) => s.value)),
+        knobD: r(28, 42), knobH: r(22, 30), headH: r(7, 12), puff: pick([0, r(40, 95, 5)]), edge: r(1.5, 4, 0.5),
+        headCount: r(3, 8), headDepth: r(25, 65), headRounding: r(30, 100), headSeed: r(1, 999), headAngle: pick([0, 45, 90]),
+        headM: r(3, 9), headN1: pick([1, 2, 3, 5]), headN2: r(2, 9, 0.5), headN3: r(2, 9, 0.5), ringHole: r(30, 55),
+      };
+    if (type === 'bar')
+      return {
+        type, barStyle: pick(['twisted', 'wavy', 'bone', 'branch']), spacing: pick(['96', '128', '160', '192']), overhang: r(12, 24),
+        barD: r(12, 18), twistSection: pick(['square', 'triangle', 'star', 'flower', 'cross']), barTwist: r(90, 450, 15),
+        waves: pick([0.5, 1, 1.5, 2]), waveAmp: r(5, 12), boneSize: r(140, 190, 5), branchKnots: r(20, 90, 5), branchSeed: r(1, 999),
+      };
+    return { type, spacing: pick(['96', '128', '160']), archShape: pick(['wave', 'loop']), archWave: r(5, 12), loopD: r(22, 36), archT: r(8, 12), archW: r(10, 16) };
+  },
   assets: assetsOf,
   build,
 };
