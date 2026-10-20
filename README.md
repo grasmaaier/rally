@@ -16,6 +16,8 @@ bekijk het model live in 3D en download een **3MF** die je direct in Bambu Studi
 | **Plantenpotten** | Zelfwaterende potten (reservoir + binnenpot met 45°-trechter, wiekkolom en vulbuisje). Kies **staand**, **hangend** of **aan de muur** en het ontwerp past zich aan: schotel met ribbels, ophanglipjes plus ophangring, of een vlakke achterkant met sleutelgaten. Toont ook hoeveel water en potgrond erin past. Alle vaasvormen en profielstijlen werken ook hier. |
 | **Klokken** | Nieuwe wijzerplaat, cijfers en wijzers voor een standaard quartz-uurwerk uit een oude klok. Wijzerplaat in elke vorm (ook eigen SVG) met rand en uitsparing achter; cijfers 1–12, Romeins, kwartieren of eigen tekst in 14 meegeleverde Google Fonts, elk Google Font op naam of een eigen fontbestand; acht wijzerstijlen of eigen SVG met gatmaten voor Europese en Amerikaanse uurwerken. Ook losse wandcijfers en een pasproef voor de wijzergaten. |
 | **Tandenborstelhouders** | Wandhouders voor elektrische tandenborstels (Philips Sonicare, Oral-B, Oral-B iO of eigen maat) die met losse zuignappen (bijv. Bambu HA011 40 mm) aan tegels of spiegel hangen: beker, ophangvork of opladerplank, opzetborstels en tandpasta. Merkmaten zijn richtwaarden; de pasproef controleert ze. |
+| **Lampen** | Stapelbare hang- en tafellampen uit tot acht segmenten die over een standaard holle draadbuis M10x1 schuiven: bol, kussen/donut, cilinder, tol/zigzag, diabolo, kegel, koepel, boog, ziggurat, bloem- en tandwielschijf, platte schijf, afstandshouders (hals of losse stijlen zodat schijven lijken te zweven), open kappen (cilinder, kegel, klok, koepel, getrapt) en lamellen voor een lagenkoepel. Elk segment glad, met fijne plissé, ribbels of ringen en in een eigen kleur; centreerkegels houden de stapel recht. E27/E14/G9-fitting met echte lampmaten (A60, G95, G125, kogel, kaars…) en controle van de afstand tot het glas. Tafellamp met verzwaarde voet, bodemplaat en kabelsleuf (plus kantelcontrole); hanglamp met kapje over de trekontlasting en plafondkap. Alles print zonder support; voorbeelden: totem plissé, Memphis, lagenkoepel, bloemetjeslamp, ziggurat. |
+| **Generatief** | Organische, generatieve prints van een 3D-model: upload een **STL** (binair of tekst), **OBJ** of **3MF** of kies een ingebouwd voorwerp (telefoon, oordopjes-case, ei, bol). Maak er een nauwsluitende **hoes/kooi** van (instelbare speling en wand, open aan boven- of onderkant of in twee helften), een **standaard** met vertakte, botachtige stutten die het voorwerp schuin achterover houdt (rand, rugsteun, kabelsleuf, stabiliteitscontrole van het zwaartepunt) of een **lattice-versie** van het model zelf (geperforeerde huid of 3D-vakwerk). Patronen: Voronoi, organische blobs en gyroid, glad afgerond met signed distance fields. Grote modellen worden vereenvoudigd; modellen met gaten werken ook. |
 
 Verder:
 
@@ -57,8 +59,9 @@ Zet daarvoor één keer in de repository-instellingen **Settings → Pages → S
 ```
 src/
   core/      engine, worker, 3MF/STL-export, printerprofielen, plaatindeling
-  geom/      vormhulpmiddelen: omwentelingsoppervlakken, 2D-vormen, tekst, poten, afrondingen, schroefgaten
-  tools/     de acht ontwerptools (elk: parameters + bouwfunctie)
+  geom/      vormhulpmiddelen: omwentelingsoppervlakken, 2D-vormen, tekst, poten, afrondingen, schroefgaten,
+             afstandsvelden en patronen voor generatieve vormen, STL/OBJ/3MF inlezen
+  tools/     de tien ontwerptools (elk: parameters + bouwfunctie)
   ui/        3D-viewer en formulier
 tests/       geometrie-, samenstellings- en exporttests
 ```
@@ -70,7 +73,7 @@ het in `src/tools/index.ts`. Het formulier, de 3D-weergave en de export werken d
 ## Printtips voor de A2L
 
 - Het bed van de A2L wordt maximaal 80 °C: ideaal voor PLA, PETG en TPU.
-- **Lampenkappen**: gebruik alleen LED-lampen. PLA wordt zacht rond 55 °C.
+- **Lampenkappen en lampen**: gebruik alleen LED-lampen. PLA wordt zacht rond 55 °C; print delen dicht bij de lamp in PETG.
 - **Plantenpotten voor buiten**: PETG is UV- en waterbestendiger dan PLA.
 - **Dragende verbinders** (meubels, tafelhoeken): 4 wanden en 30–40% infill.
 - **Speling**: meet je hout na. "18 mm" plaatmateriaal is in de praktijk vaak 17,6–18,4 mm.

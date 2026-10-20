@@ -838,7 +838,7 @@ function addCabinetLegs(M: ManifoldToplevel, p: Params, printer: PrinterProfile,
     placed.push({ kind: 'part', part: idx, matrix: legMatrix(leg, best.x, best.y, o.zUnder, alpha) });
   }
   out.scene = [...(out.scene ?? []), ...placed].map((s) =>
-    s.kind === 'part' ? { ...s, matrix: mul(translation(0, 0, h), s.matrix) } : { ...s, position: [s.position[0], s.position[1], s.position[2] + h] as [number, number, number] },
+    s.kind === 'part' ? { ...s, matrix: mul(translation(0, 0, h), s.matrix) } : s.kind === 'mesh' ? s : { ...s, position: [s.position[0], s.position[1], s.position[2] + h] as [number, number, number] },
   );
   out.warnings = [...(out.warnings ?? []), ...leg.warnings];
   const kv = out.info?.find((b) => b.kind === 'kv');

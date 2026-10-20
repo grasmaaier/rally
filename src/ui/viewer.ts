@@ -95,7 +95,8 @@ export class Viewer {
     this.color = color;
     this.content.traverse((o) => {
       const m = (o as THREE.Mesh).material as THREE.MeshStandardMaterial | undefined;
-      if (m && m.userData.filament) {
+      // parts with their own colour (e.g. lamp segments) keep it
+      if (m && m.userData.filament && !m.userData.own) {
         m.color.set(m.userData.back ? shade(color, 0.55) : color);
       }
     });
@@ -142,28 +143,42 @@ export class Viewer {
     }
   }
 
-  private partMaterials(clip: THREE.Plane[] | null) {
-    const front = new THREE.MeshStandardMaterial({ color: this.color, roughness: 0.5, metalness: 0.0, clippingPlanes: clip ?? [] });
+  private partMaterials(clip: THREE.Plane[] | null, own?: string) {
+    const color = own ?? this.color;
+    const front = new THREE.MeshStandardMaterial({ color, roughness: 0.5, metalness: 0.0, clippingPlanes: clip ?? [] });
     front.userData.filament = true;
+    front.userData.own = !!own;
     if (!clip) return [front];
-    const back = new THREE.MeshStandardMaterial({ color: shade(this.color, 0.55), roughness: 0.9, side: THREE.BackSide, clippingPlanes: clip });
+    const back = new THREE.MeshStandardMaterial({ color: shade(color, 0.55), roughness: 0.9, side: THREE.BackSide, clippingPlanes: clip });
     back.userData.filament = true;
     back.userData.back = true;
+    back.userData.own = !!own;
     return [front, back];
   }
 
-  private addPart(geom: THREE.BufferGeometry, matrix: THREE.Matrix4, clipAt: number | null) {
+  private addPart(geom: THREE.BufferGeometry, matrix: THREE.Matrix4, clipAt: number | null, color?: string) {
     let clip: THREE.Plane[] | null = null;
     if (this.section && clipAt !== null) {
       // cut along the depth: keep world y >= clipAt (the root group is Z-up = world Z-up here)
       clip = [new THREE.Plane(new THREE.Vector3(0, 1, 0), -clipAt)];
     }
-    for (const mat of this.partMaterials(clip)) {
+    for (const mat of this.partMaterials(clip, color)) {
       const mesh = new THREE.Mesh(geom, mat);
       mesh.matrixAutoUpdate = false;
       mesh.matrix.copy(matrix);
       this.content.add(mesh);
     }
+  }
+
+  /** A see-through reference model (e.g. the uploaded object a cover or stand is made for). */
+  private addGhostMesh(data: { positions: Float32Array; indices: Uint32Array }, color: string) {
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.BufferAttribute(data.positions, 3));
+    geo.setIndex(new THREE.BufferAttribute(data.indices, 1));
+    geo.computeVertexNormals();
+    this.geoms.push(geo);
+    const mat = new THREE.MeshStandardMaterial({ color, roughness: 0.6, transparent: true, opacity: 0.28, depthWrite: false, side: THREE.DoubleSide });
+    this.content.add(new THREE.Mesh(geo, mat));
   }
 
   show(result: BuildResult, mode: ViewMode, printer: PrinterProfile, placements: Placement[], fitKey: string) {
@@ -186,7 +201,7 @@ export class Viewer {
       for (const pl of placements) {
         const m = new THREE.Matrix4().makeTranslation(pl.x + plateOffset(printer, pl.plate), pl.y, 0);
         if (pl.rotated) m.multiply(new THREE.Matrix4().makeRotationZ(Math.PI / 2));
-        this.addPart(geoms[pl.part], m, pl.y);
+        this.addPart(geoms[pl.part], m, pl.y, result.parts[pl.part].color);
       }
     } else {
       this.plates.visible = false;
@@ -195,6 +210,8 @@ export class Viewer {
         if (s.kind === 'part') {
           const gb = geoms[s.part].boundingBox!.clone().applyMatrix4(new THREE.Matrix4().fromArray(s.matrix));
           box.union(gb);
+        } else if (s.kind === 'mesh') {
+          box.union(new THREE.Box3().setFromArray(s.mesh.positions));
         } else {
           box.union(new THREE.Box3(new THREE.Vector3(...s.position), new THREE.Vector3(s.position[0] + s.size[0], s.position[1] + s.size[1], s.position[2] + s.size[2])));
         }
@@ -203,7 +220,9 @@ export class Viewer {
       const clip = this.section ? [new THREE.Plane(new THREE.Vector3(0, 1, 0), -cy)] : [];
       for (const s of result.scene) {
         if (s.kind === 'part') {
-          this.addPart(geoms[s.part], new THREE.Matrix4().fromArray(s.matrix), cy);
+          this.addPart(geoms[s.part], new THREE.Matrix4().fromArray(s.matrix), cy, result.parts[s.part].color);
+        } else if (s.kind === 'mesh') {
+          this.addGhostMesh(s.mesh, s.color);
         } else {
           const geo = new THREE.BoxGeometry(...s.size);
           this.geoms.push(geo);

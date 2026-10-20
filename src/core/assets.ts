@@ -1,6 +1,6 @@
 import { parse, type Font } from 'opentype.js';
 import { googleFontInfoUrl, googleFontUrl } from './fonts';
-import { UserError, type AssetRef, type AssetStore, type ShapeAsset } from './types';
+import { UserError, type AssetRef, type AssetStore, type MeshAsset, type ShapeAsset } from './types';
 
 /** Where asset bytes come from; differs between the browser and the test runner. */
 export interface AssetSource {
@@ -20,6 +20,7 @@ const FREE_LICENSES = /^(OFL|Apache|UFL|MIT|CC0)/i;
 export class AssetCache implements AssetStore {
   private fonts = new Map<string, Font>();
   private shapes = new Map<string, ShapeAsset>();
+  private meshes = new Map<string, MeshAsset>();
   private uploads = new Map<string, ArrayBuffer>();
   private failed = new Map<string, string>();
 
@@ -35,9 +36,14 @@ export class AssetCache implements AssetStore {
     this.shapes.set(key, shape);
   }
 
+  putMesh(key: string, mesh: MeshAsset) {
+    this.meshes.set(key, mesh);
+  }
+
   async ensure(refs: AssetRef[]) {
     for (const ref of refs) {
       if (ref.kind === 'font') await this.loadFont(ref.key);
+      else if (ref.kind === 'mesh') this.mesh(ref.key);
       else if (!this.shapes.has(ref.key)) throw new UserError('De geüploade vorm is niet meer beschikbaar. Upload het SVG-bestand opnieuw.');
     }
   }
@@ -99,6 +105,12 @@ export class AssetCache implements AssetStore {
     const s = this.shapes.get(key);
     if (!s) throw new UserError('De geüploade vorm is niet meer beschikbaar. Upload het SVG-bestand opnieuw.');
     return s;
+  }
+
+  mesh(key: string): MeshAsset {
+    const m = this.meshes.get(key);
+    if (!m) throw new UserError('Het geüploade 3D-model is niet meer beschikbaar. Upload het bestand opnieuw.');
+    return m;
   }
 }
 
