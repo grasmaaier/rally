@@ -351,14 +351,17 @@ function bodySamples(pc: Piece, c: Ctx): LatheSample[] {
 function stackSamples(pc: Piece, c: Ctx): LatheSample[] {
   const body = bodySamples(pc, c);
   const h = pc.h;
+  // a spigot rises from the face: pull the body's edge sample just inside, so nothing pokes past the face
+  if (pc.faces[0] === 'spigot') body[0].z = 0.02;
+  if (pc.faces[1] === 'spigot') body[body.length - 1].z = h - 0.02;
   for (const q of body) {
     if (pc.faces[0] === 'recess' && q.z < RECESS.depth) q.i = Math.max(q.i, RECESS.r0 - q.z);
     if (pc.faces[1] === 'recess' && q.z > h - RECESS.depth) q.i = Math.max(q.i, RECESS.r0 - (h - q.z));
   }
   const spig = (z0: number, z1: number, r: (z: number) => number) => sampleRange(z0, z1, 0.2, (z) => ({ o: r(z), i: BORE_R, tex: 0, wall: SPIGOT_WALL }));
   const k = (SPIGOT.r0 - SPIGOT.r1) / SPIGOT.h;
-  const below = pc.faces[0] === 'spigot' ? spig(-SPIGOT.h, -0.02, (z) => SPIGOT.r0 + k * z) : [];
-  const above = pc.faces[1] === 'spigot' ? spig(h + 0.02, h + SPIGOT.h, (z) => SPIGOT.r0 - k * (z - h)) : [];
+  const below = pc.faces[0] === 'spigot' ? spig(-SPIGOT.h, 0, (z) => SPIGOT.r0 + k * z) : [];
+  const above = pc.faces[1] === 'spigot' ? spig(h, h + SPIGOT.h, (z) => SPIGOT.r0 - k * (z - h)) : [];
   const all = [...below, ...body, ...above];
   pc.zmin = all[0].z;
   pc.zmax = all[all.length - 1].z;
@@ -477,7 +480,8 @@ function clearanceTo(o: Outline, glass: { r: (t: number) => number; length: numb
 
 function postHoleCutter(M: ManifoldToplevel, r: number): Manifold {
   return M.Manifold.union([
-    M.Manifold.cylinder(POST_HOLE + 0.02, r, r, 24).translate([0, 0, -0.02]),
+    // overlapping pieces: touching ones leave a zero-thickness skin inside the hole
+    M.Manifold.cylinder(POST_HOLE + 0.05, r, r, 24).translate([0, 0, -0.02]),
     M.Manifold.cylinder(r, r, 0.05, 24).translate([0, 0, POST_HOLE]),
   ]);
 }
@@ -927,7 +931,7 @@ function build(p: Params, { M, printer }: Parameters<ToolDef['build']>[1]): Buil
       const bosses: Manifold[] = [];
       const holes: Manifold[] = [];
       for (const x of [-spacing, spacing]) {
-        bosses.push(M.Manifold.cylinder(printH - CANOPY.floor - 0.5, CANOPY.boss, CANOPY.boss, 32).translate([x, 0, CANOPY.floor - 0.01]));
+        bosses.push(M.Manifold.cylinder(printH - CANOPY.floor, CANOPY.boss, CANOPY.boss, 32).translate([x, 0, CANOPY.floor - 0.5]));
         holes.push(M.Manifold.cylinder(printH + 1, CANOPY.screw / 2, CANOPY.screw / 2, 24).translate([x, 0, -0.5]));
         // countersunk head (90°) at the visible underside
         holes.push(M.Manifold.cylinder(2.3 + 0.01, 4.5, 2.25, 24).translate([x, 0, -0.01]));
@@ -1186,7 +1190,7 @@ const presets: Preset[] = [
       ...stack(
         { shape: 'kap', kap: 'kegel', D: 200, H: 110, v: 10, tex: 'plisse', texN: 90, color: W },
         { shape: 'hals', D: 24, H: 120, color: BLACK },
-        { shape: 'tol', D: 80, H: 70, n: 3, v: 20, color: BLACK },
+        { shape: 'tol', D: 76, H: 90, n: 2, v: 30, color: BLACK },
       ),
     },
   },

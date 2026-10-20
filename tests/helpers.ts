@@ -5,7 +5,7 @@ import { AssetCache } from '../src/core/assets';
 import { BUNDLED_FONTS } from '../src/core/fonts';
 import { runBuild } from '../src/core/engine';
 import { DEFAULT_PRINTER } from '../src/core/printer';
-import type { Params, PrinterProfile, ToolDef } from '../src/core/types';
+import type { Params, PartResult, PrinterProfile, ToolDef } from '../src/core/types';
 
 const require = createRequire(import.meta.url);
 
@@ -40,4 +40,30 @@ testAssets.putShape('upload:test-star', { name: 'ster.svg', polygons: [star, hol
 export async function buildTool(M: ManifoldToplevel, tool: ToolDef, params: Params, printer: PrinterProfile = DEFAULT_PRINTER) {
   await testAssets.ensure(tool.assets?.(params) ?? []);
   return runBuild(M, tool, params, printer, testAssets);
+}
+
+/**
+ * Area (mm²) of downward faces steeper than 45° (plus a little tolerance for
+ * the tessellation: `limit` is the z-component of the face normal) that are
+ * not on the bed. A part that prints without support has (almost) none.
+ */
+export function overhangArea(part: PartResult, limit = -0.75) {
+  const { positions: P, indices: I } = part.mesh;
+  let minZ = Infinity;
+  for (let i = 2; i < P.length; i += 3) minZ = Math.min(minZ, P[i]);
+  let area = 0;
+  for (let t = 0; t < I.length; t += 3) {
+    const a = I[t] * 3;
+    const b = I[t + 1] * 3;
+    const c = I[t + 2] * 3;
+    const ux = P[b] - P[a], uy = P[b + 1] - P[a + 1], uz = P[b + 2] - P[a + 2];
+    const vx = P[c] - P[a], vy = P[c + 1] - P[a + 1], vz = P[c + 2] - P[a + 2];
+    const nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx;
+    const len = Math.hypot(nx, ny, nz);
+    if (len < 1e-9) continue;
+    const zLow = Math.min(P[a + 2], P[b + 2], P[c + 2]);
+    if (zLow < minZ + 0.3) continue;
+    if (nz / len < limit) area += len / 2;
+  }
+  return area;
 }

@@ -5,7 +5,7 @@ import { collect } from '../src/core/registry';
 import { DEFAULT_PRINTER, fitsOn } from '../src/core/printer';
 import { NO_ASSETS, defaultsOf, type BuildResult, type Params } from '../src/core/types';
 import { BRANDS, CUPS, holderLayout, mountPlan, toothbrushTool as tool } from '../src/tools/toothbrush';
-import { buildTool } from './helpers';
+import { buildTool, overhangArea as partOverhang } from './helpers';
 
 let M: ManifoldToplevel;
 beforeAll(async () => {
@@ -15,28 +15,7 @@ beforeAll(async () => {
 const base = defaultsOf(tool.params);
 const params = (v: Partial<Params>) => ({ ...base, ...v }) as Params;
 
-/** Area (mm²) of downward faces steeper than 45° that are not on the bed. */
-function overhangArea(res: BuildResult, part = 0) {
-  const { positions: P, indices: I } = res.parts[part].mesh;
-  let minZ = Infinity;
-  for (let i = 2; i < P.length; i += 3) minZ = Math.min(minZ, P[i]);
-  let area = 0;
-  for (let t = 0; t < I.length; t += 3) {
-    const a = I[t] * 3;
-    const b = I[t + 1] * 3;
-    const c = I[t + 2] * 3;
-    const ux = P[b] - P[a], uy = P[b + 1] - P[a + 1], uz = P[b + 2] - P[a + 2];
-    const vx = P[c] - P[a], vy = P[c + 1] - P[a + 1], vz = P[c + 2] - P[a + 2];
-    const nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx;
-    const len = Math.hypot(nx, ny, nz);
-    if (len < 1e-9) continue;
-    const zLow = Math.min(P[a + 2], P[b + 2], P[c + 2]);
-    if (zLow < minZ + 0.3) continue;
-    // steeper than 45° (plus a little tolerance for the tessellation)
-    if (nz / len < -0.75) area += len / 2;
-  }
-  return area;
-}
+const overhangArea = (res: BuildResult, part = 0) => partOverhang(res.parts[part]);
 
 describe('tandenborstelhouder', () => {
   const brands = [...Object.keys(BRANDS), 'custom'];
