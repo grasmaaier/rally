@@ -1,6 +1,6 @@
 import './styles.css';
 import { TOOLS, TOOL_MAP } from './tools';
-import { defaultsOf, type BuildResult, type FileParam, type Params, type ParamValue, type PartResult, type PrinterProfile, type ShapeAsset, type ToolDef } from './core/types';
+import { defaultsOf, type BuildResult, type FileParam, type MeshAsset, type Params, type ParamValue, type PartResult, type PrinterProfile, type ShapeAsset, type ToolDef } from './core/types';
 import { DEFAULT_PRINTER, PRINTERS, fitsOn } from './core/printer';
 import { GeometryClient } from './core/client';
 import { arrange, plateOffset } from './core/layout';
@@ -8,6 +8,7 @@ import { build3MF, buildSTL, download, slug, type ExportObject } from './core/ex
 import { Viewer, type ViewMode } from './ui/viewer';
 import { buildForm, type FileHooks, type FormHandle } from './ui/form';
 import { svgToShape } from './ui/svg';
+import { parseMeshFile } from './geom/meshfile';
 
 const $ = <T extends HTMLElement = HTMLElement>(sel: string) => document.querySelector(sel) as T;
 
@@ -330,11 +331,19 @@ function exportPart(i: number) {
 // ---------------------------------------------------------------------------
 // Uploaded fonts and SVG outlines (kept in this browser so a reload keeps them)
 
+/** An uploaded 3D model as stored: base64 of the float/index arrays. */
+interface StoredMesh {
+  positions: string;
+  indices: string;
+  unitKnown: boolean;
+  decimatedFrom?: number;
+}
+
 interface StoredUpload {
   name: string;
-  kind: 'font' | 'shape';
-  /** base64 font bytes, or the converted outline */
-  data: string | ShapeAsset;
+  kind: 'font' | 'shape' | 'mesh';
+  /** base64 font bytes, the converted outline or the triangles */
+  data: string | ShapeAsset | StoredMesh;
 }
 
 const uploadNames = new Map<string, string>();
@@ -384,6 +393,7 @@ function restoreUploads() {
       const u = JSON.parse(raw) as StoredUpload;
       uploadNames.set(key, u.name);
       if (u.kind === 'font') client.put({ type: 'font', key, bytes: base64ToBytes(u.data as string).buffer });
+      else if (u.kind === 'mesh') client.put({ type: 'mesh', key, mesh: meshFromStore(u.name, u.data as StoredMesh) });
       else client.put({ type: 'shape', key, shape: u.data as ShapeAsset });
     }
   } catch {
@@ -391,8 +401,33 @@ function restoreUploads() {
   }
 }
 
+function meshFromStore(name: string, m: StoredMesh): MeshAsset {
+  const p = base64ToBytes(m.positions);
+  const i = base64ToBytes(m.indices);
+  return { name, positions: new Float32Array(p.buffer, 0, p.length / 4), indices: new Uint32Array(i.buffer, 0, i.length / 4), unitKnown: m.unitKnown, decimatedFrom: m.decimatedFrom };
+}
+
+function hashBytes(b: Uint8Array) {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < b.length; i++) {
+    h ^= b[i];
+    h = Math.imul(h, 0x01000193);
+  }
+  return `${(h >>> 0).toString(36)}${b.length.toString(36)}`;
+}
+
 const fileHooks: FileHooks = {
   async upload(def: FileParam, file: File) {
+    if (def.asset === 'mesh') {
+      if (!/\.(stl|obj|3mf)$/i.test(file.name)) throw new Error('Kies een 3D-model (.stl, .obj of .3mf).');
+      const bytes = new Uint8Array(await file.arrayBuffer());
+      const mesh = parseMeshFile(bytes, file.name);
+      const key = `upload:m${hashBytes(bytes)}`;
+      client.put({ type: 'mesh', key, mesh });
+      const b64 = (a: Float32Array | Uint32Array) => bytesToBase64(new Uint8Array(a.buffer, a.byteOffset, a.byteLength));
+      rememberUpload(key, { name: file.name, kind: 'mesh', data: { positions: b64(mesh.positions), indices: b64(mesh.indices), unitKnown: mesh.unitKnown, decimatedFrom: mesh.decimatedFrom } });
+      return key;
+    }
     if (def.asset === 'font') {
       if (/\.woff2$/i.test(file.name)) throw new Error('WOFF2 wordt niet ondersteund: gebruik TTF, OTF of WOFF.');
       if (!/\.(ttf|otf|woff)$/i.test(file.name)) throw new Error('Kies een lettertype (.ttf, .otf of .woff).');

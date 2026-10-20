@@ -6,6 +6,7 @@
  */
 import type { Manifold, ManifoldToplevel, Vec3 } from 'manifold-3d';
 import { UserError } from '../core/types';
+import { keep } from '../core/registry';
 import { DistanceGrid, smax, smin, type Box3 } from './sdf';
 import { SeedSet, hash3, surfacePattern, volumePattern, type PatternOptions } from './patterns';
 import { applyM4, mul, rotX, rotY, rotZ, type M4 } from './helpers';
@@ -183,9 +184,12 @@ export function largestPiece(solid: Manifold): { solid: Manifold; dropped: numbe
   return { solid: best, dropped: total > 0 ? (total - bv) / total : 0, pieces: parts.length };
 }
 
-function finish(solid: Manifold, what: string, warnings: string[]): Manifold {
+function finish(M: ManifoldToplevel, solid: Manifold, what: string, warnings: string[]): Manifold {
   if (solid.isEmpty() || solid.volume() < 1) throw new UserError(`Er blijft geen ${what} over met deze instellingen. Maak de stutten of wand dikker, of de cellen groter.`);
-  const { solid: kept, dropped } = largestPiece(solid);
+  // A level set can touch itself at single vertices. Rebuilding from the mesh splits
+  // those pinches, so loose crumbs show up as separate pieces and the result is cleanly manifold.
+  const rebuilt = keep(new M.Manifold(solid.getMesh()));
+  const { solid: kept, dropped } = largestPiece(rebuilt);
   if (dropped > 0.04) warnings.push(`${Math.round(dropped * 100)}% van het patroon hing los en is weggelaten. Verlaag de openheid of maak de stutten dikker.`);
   return kept;
 }
@@ -263,7 +267,7 @@ export function buildCage(M: ManifoldToplevel, body: Body, o: CageOptions): GenR
     };
     let solid = mesh(M, f, bounds(sgn, edge), edge);
     solid = sgn > 0 ? solid.trimByPlane([0, 0, -1], -zCut) : solid.trimByPlane([0, 0, 1], zCut);
-    solid = finish(solid, 'hoes', warnings);
+    solid = finish(M, solid, 'hoes', warnings);
     const name = o.opening === 'halves' ? (sgn > 0 ? 'Onderhelft' : 'Bovenhelft') : 'Hoes';
     // rim on the bed: the cut is the flattest, widest face
     parts.push({ name, solid, print: sgn > 0 ? rotX(180) : rotX(0) });
@@ -368,7 +372,7 @@ export function buildLattice(M: ManifoldToplevel, body: Body, o: LatticeOptions)
     return Math.max(v, d, below);
   };
   let solid = mesh(M, f, bounds(edge), edge).trimByPlane([0, 0, 1], zb);
-  solid = finish(solid, 'structuur', warnings);
+  solid = finish(M, solid, 'structuur', warnings);
   const parts: GenPart[] = [{ name: o.structure === 'skin' ? 'Geperforeerd model' : 'Lattice-model', solid, print: rotX(0) }];
   tips.push('Print zoals getoond, met de vlakke onderkant op het bed. Overhangende stutten en de bovenkant van holle vormen hebben tree supports (organisch) nodig.');
   if (lattice) tips.push('Een lattice heeft veel korte stukjes: zet "Avoid crossing walls" aan en verlaag de retractieafstand niet.');
@@ -886,7 +890,7 @@ export function buildStand(M: ManifoldToplevel, body: Body, o: StandOptions): St
     return Math.max(v, -edge - z);
   };
   let solid = mesh(M, f, bnd, edge).trimByPlane([0, 0, 1], 0);
-  solid = finish(solid, 'standaard', warnings);
+  solid = finish(M, solid, 'standaard', warnings);
 
   // --- stability check on the real footprint ---
   const standVol = solid.volume();
