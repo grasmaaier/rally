@@ -517,6 +517,27 @@ const TWIST_SECTIONS: Record<string, Partial<ShapeSpec>> = {
   cross: { shape: 'cross', count: 4, depth: 0.3, rounding: 1 },
 };
 
+/** Nut pocket for a horizontal hole: a hexagon (point up) with a 45° roof, so it prints without support. */
+function nutTeardrop(M: ManifoldToplevel, af: number): CrossSection {
+  const pts = hexagon(M, af);
+  return M.CrossSection.hull([pts, keep(new M.CrossSection([[[-0.01, 0], [0.01, 0], [0, 0.79 * af]]]))]);
+}
+
+/**
+ * Like `fixingHole`, but for a hole that lies horizontal when printed: the
+ * cutter runs along +Z from z = 0 and its teardrop / hex roof points to +Y.
+ */
+function sideFixingHole(M: ManifoldToplevel, screw: string, mount: string, depth: number): Manifold {
+  const s = SCREWS[screw] ?? SCREWS.M4;
+  const prism = (cs: CrossSection, z0: number, z1: number) => cs.extrude(z1 - z0).translate([0, 0, z0]);
+  if (mount === 'insert') {
+    const l = Math.min(s.insertL, depth);
+    return M.Manifold.union([prism(teardrop(M, s.insertD / 2, 32), -0.01, l), prism(teardrop(M, s.clear / 2, 24), l - 0.01, Math.max(l + 0.1, depth + 0.01))]);
+  }
+  if (mount === 'nut') return M.Manifold.union([prism(nutTeardrop(M, s.nutAF + 0.3), -0.01, s.nutH + 0.4), prism(teardrop(M, s.clear / 2, 24), -0.01, depth + 0.01)]);
+  return prism(teardrop(M, s.pilot / 2, 24), -0.01, depth + 0.01);
+}
+
 /** Posts (with a small flare at the door) and their fixing holes, for bars printed upside down. */
 function postsWithHoles(M: ManifoldToplevel, p: Params, c: number, zc: number, pd: number) {
   const posts: Manifold[] = [];
@@ -596,7 +617,7 @@ function uprightBar(M: ManifoldToplevel, p: Params, bar: Manifold, o: { L: numbe
   const along = (cs: CrossSection, y0: number, y1: number, zp: number) => cs.extrude(y1 - y0).rotate([90, 0, 0]).translate([0, y1, zp]);
   for (const zp of [L / 2 - c / 2, L / 2 + c / 2]) {
     if (mount === 'nut') {
-      holes.push(along(hexagon(M, s.nutAF + 0.3), -R - 1, -rIn + s.nutH + 0.4, zp));
+      holes.push(along(nutTeardrop(M, s.nutAF + 0.3), -R - 1, -rIn + s.nutH + 0.4, zp));
       holes.push(along(teardrop(M, s.clear / 2, 24), -R - 1, holeEnd, zp));
     } else if (mount === 'insert') {
       holes.push(along(teardrop(M, s.insertD / 2, 32), -R - 1, Math.min(holeEnd, -rIn + s.insertL + 0.5), zp));
@@ -775,12 +796,14 @@ function arch(M: ManifoldToplevel, p: Params) {
   for (const x of [-c / 2, c / 2]) segments.push(roundedRect(M, footL, footH * 2, Math.min(2, footH)).translate([x, 0]));
   const topZ = Math.max(...center.map((q) => q[1])) + t / 2 + 2;
   let outline = M.CrossSection.union(segments).intersect(M.CrossSection.square([c + footL + 4 * t, topZ]).translate([-(c + footL + 4 * t) / 2, 0]));
-  outline = outline.offset(-0.6, 'Round').offset(0.6, 'Round');
+  // soften inner corners, then drop the points the hulls left on straight runs (keeps the fillet layers fast)
+  outline = outline.offset(-0.6, 'Round', 2, 48).offset(0.6, 'Round', 2, 48).simplify(0.01);
   let solid = filletExtrude(M, outline, w, num(p, 'edgeR'), num(p, 'edgeR'));
   // screw holes go from the door face (y = 0 in the 2D outline) into the feet
   const holeDepth = Math.min(footH + t * 0.6, 16);
   for (const x of [-c / 2, c / 2]) {
-    solid = solid.subtract(fixingHole(M, str(p, 'screw'), str(p, 'mount'), holeDepth).rotate([-90, 0, 0]).translate([x, 0, w / 2]));
+    // the hole lies horizontal on the bed: teardrop (point up after the rotation) prints without support
+    solid = solid.subtract(sideFixingHole(M, str(p, 'screw'), str(p, 'mount'), holeDepth).rotate([0, 0, 180]).rotate([-90, 0, 0]).translate([x, 0, w / 2]));
   }
   const tips = ['Ligt plat op het bed: de laaglijnen lopen door de hele greep, dus hij is erg sterk.'];
   const s = SCREWS[str(p, 'screw')];

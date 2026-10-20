@@ -547,8 +547,12 @@ export function buildShape(o: ShapeOptions, quality = 1, maxSlope = MAX_WALL_SLO
   const phi = twistFn(opts);
   const H = opts.height;
   // sample the wall: radius change per mm of height at a fixed (world) angle
-  const nA = G ? 120 : 72;
-  const nZ = Math.round(clamp(H / (G ? 1.5 : 3), 30, 200));
+  // fine enough to catch the steepest flank of the smallest bumps (about 1/8 of their size)
+  let feat = (opts.organic ?? 0) > 0 ? Math.max(5, opts.organicScale ?? 40) / 8 : 1.5;
+  if (opts.profile === 'wavy') feat = Math.min(feat, H / Math.round(clamp(opts.profileCount ?? 6, 1, 30)) / 8);
+  const rTyp = Math.max(...opts.radii);
+  const nA = G ? Math.round(clamp((TAU * rTyp) / feat, 120, 360)) : 72;
+  const nZ = Math.round(clamp(H / (G ? Math.min(1.5, feat) : 3), 30, 400));
   const h = Math.min(0.4, H / 400);
   let kept = 1;
   let steepest = 0;
