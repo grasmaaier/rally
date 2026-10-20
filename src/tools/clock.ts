@@ -9,7 +9,7 @@ import { TAU, clamp, deg, identity, mul, rotX, rotZ, translation, type M4 } from
 import { missingChars, sizeForHeight, textCross } from '../geom/text';
 import { effectiveSpec, radialShape, shapeAssets, shapeCross, shapeParams, shapeSpecFrom, type ShapeSpec } from '../geom/shapes2d';
 import {
-  HAND_STYLES, MOVEMENTS, PLA_DENSITY, TICK_STYLES, areaStats, disc, edgeExtrude, fitStrip, handCross, holeCross, nl, polygon, polygonsOf, secondCross, tickCross,
+  HAND_STYLES, MOVEMENTS, PLA_DENSITY, TICK_STYLES, areaStats, disc, edgeExtrude, fitStrip, handCross, holeCross, nl, polygon, secondCross, tickCross,
   type FitItem,
 } from './clockParts';
 
@@ -248,7 +248,7 @@ function placeNumerals(M: ManifoldToplevel, p: Params, font: Font, geo: DialGeo,
     const c = Math.cos(deg(rot));
     const s = Math.sin(deg(rot));
     // rotated outline points, ready for the inside test
-    const pts = polygonsOf(cs).flat().map(([x, y]) => [x * c - y * s, x * s + y * c] as Vec2);
+    const pts = cs.toPolygons().flat().map(([x, y]) => [x * c - y * s, x * s + y * c] as Vec2);
     return { label, cs, angle, th, rot, pts, r0: k * (follow ? geo.ru(th) : geo.ruMin) };
   });
   type Item = NonNullable<(typeof items)[number]>;
@@ -376,7 +376,7 @@ function tickMarks(M: ManifoldToplevel, p: Params, geo: DialGeo, numeralAngles: 
   /** Pull a tick inward until all its corners are inside the outline (slanted edges of polygons). */
   const fitR = (tick: CrossSection, a: number, r0: number) => {
     let pts = corners.get(tick);
-    if (!pts) corners.set(tick, (pts = polygonsOf(tick).flat()));
+    if (!pts) corners.set(tick, (pts = tick.toPolygons().flat()));
     const c = Math.cos(deg(a - 90));
     const s = Math.sin(deg(a - 90));
     const th = deg(a);
@@ -874,7 +874,7 @@ function inside(polys: Vec2[][], x: number, y: number) {
 function keyholeSpot(back: CrossSection): [number, number] | null {
   const room = back.offset(-(4.25 + 1.4), 'Round');
   if (room.isEmpty()) return null;
-  const polys = polygonsOf(room);
+  const polys = room.toPolygons();
   const b = room.bounds();
   const cx = (b.min[0] + b.max[0]) / 2;
   const w = b.max[0] - b.min[0];
@@ -896,7 +896,7 @@ function bridges(M: ManifoldToplevel, cs: CrossSection, H: number): CrossSection
   const info = islands.map((c) => {
     const b = c.bounds();
     // the island with its counters filled (outer contours are counter-clockwise)
-    const outer = polygonsOf(c).filter((poly) => signedArea(poly) > 0);
+    const outer = c.toPolygons().filter((poly) => signedArea(poly) > 0);
     const filled = outer.length ? keep(new M.CrossSection(outer, 'Positive')) : c;
     return { c: [(b.min[0] + b.max[0]) / 2, (b.min[1] + b.max[1]) / 2] as Vec2, counters: filled.subtract(c) };
   });

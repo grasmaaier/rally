@@ -255,39 +255,13 @@ export function holeCross(M: ManifoldToplevel, d: number, flat = 0): CrossSectio
   return c.intersect(M.CrossSection.square([Math.max(0.1, flat), d + 1], true));
 }
 
-interface RawPolygons {
-  size(): number;
-  get(i: number): { size(): number; get(j: number): { x: number; y: number }; delete(): void };
-  delete(): void;
-}
 
-/**
- * Contours of a cross-section. Same as `cs.toPolygons()`, but that wrapper in
- * manifold-3d 3.5 never frees the per-contour vectors and leaks WASM memory
- * on every call, which adds up quickly in the numeral-fitting loops.
- */
-export function polygonsOf(cs: CrossSection): Vec2[][] {
-  const vec = (cs as unknown as { _ToPolygons(): RawPolygons })._ToPolygons();
-  const out: Vec2[][] = [];
-  for (let i = 0; i < vec.size(); i++) {
-    const v = vec.get(i);
-    const poly: Vec2[] = [];
-    for (let j = 0; j < v.size(); j++) {
-      const p = v.get(j);
-      poly.push([p.x, p.y]);
-    }
-    v.delete();
-    out.push(poly);
-  }
-  vec.delete();
-  return out;
-}
 
 /** Signed area (mm²) and first moment about the X axis (mm³) of a cross-section. */
 export function areaStats(cs: CrossSection) {
   let a = 0;
   let sy = 0;
-  for (const poly of polygonsOf(cs)) {
+  for (const poly of cs.toPolygons()) {
     for (let i = 0; i < poly.length; i++) {
       const [x1, y1] = poly[i];
       const [x2, y2] = poly[(i + 1) % poly.length];

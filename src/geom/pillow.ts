@@ -10,32 +10,7 @@ import { TAU, clamp, fromArrays } from './helpers';
  * field over the grid, so it is always a valid closed solid.
  */
 
-interface RawPolygons {
-  size(): number;
-  get(i: number): { size(): number; get(j: number): { x: number; y: number }; delete(): void };
-  delete(): void;
-}
 
-/**
- * Contours of a cross-section. Same as `cs.toPolygons()`, but that wrapper in
- * manifold-3d 3.5 never frees its per-contour vectors and leaks WASM memory.
- */
-export function contoursOf(cs: CrossSection): [number, number][][] {
-  const vec = (cs as unknown as { _ToPolygons(): RawPolygons })._ToPolygons();
-  const out: [number, number][][] = [];
-  for (let i = 0; i < vec.size(); i++) {
-    const v = vec.get(i);
-    const poly: [number, number][] = [];
-    for (let j = 0; j < v.size(); j++) {
-      const p = v.get(j);
-      poly.push([p.x, p.y]);
-    }
-    v.delete();
-    out.push(poly);
-  }
-  vec.delete();
-  return out;
-}
 
 /**
  * Radii of the outer envelope of a cross-section (seen from the origin) on N
@@ -46,7 +21,7 @@ export function contoursOf(cs: CrossSection): [number, number][][] {
 export function radiiOf(cs: CrossSection, N: number): number[] {
   const out = new Array<number>(N).fill(0);
   const step = TAU / N;
-  for (const poly of contoursOf(cs))
+  for (const poly of cs.toPolygons())
     for (let i = 0; i < poly.length; i++) {
       const [ax, ay] = poly[i];
       const [bx, by] = poly[(i + 1) % poly.length];
