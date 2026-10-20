@@ -700,6 +700,7 @@ function build(p: Params, { M, printer }: Parameters<ToolDef['build']>[1]): Buil
     pc.postCircle = want;
   });
   if (changed) {
+    // posts turned into a neck: plain and upright, then rebuild everything with the flat faces
     for (const pc of all) {
       if (pc.role === 'seg' && pc.spec?.shape === 'hals' && !pc.final.length) {
         pc.pattern = ROUND;
@@ -914,15 +915,16 @@ function build(p: Params, { M, printer }: Parameters<ToolDef['build']>[1]): Buil
     extras.push(can);
   }
   for (const pc of extras) {
-    const orient = pc.role === 'cap' ? orientationCost(pc, c, true) < orientationCost(pc, c, false) * 0.8 : false;
-    pc.flipped = orient;
+    // the canopy prints floor down; the cap whichever way needs least change
+    pc.flipped = pc.role === 'cap' && orientationCost(pc, c, true) < orientationCost(pc, c, false) * 0.8;
     finish(pc, c);
     const printH = pc.final[pc.final.length - 1].z;
     let solid = latheSolid(M, pc.final, pc.pattern);
     if (pc.role === 'canopy') {
       const R = pc.spec!.D / 2;
       let spacing = clamp(num(p, 'canopyScrews'), 30, 200) / 2;
-      const maxS = R - CANOPY.wall - CANOPY.boss - 1;
+      // bosses stand on the flat part of the floor, inside the rounded bottom edge
+      const maxS = R - Math.max(CANOPY.wall, Math.min(pc.h / 2, 10)) - CANOPY.boss - 1;
       if (spacing > maxS) {
         notes.push(`Schroefafstand plafondkap verkleind tot ${(2 * maxS).toFixed(0)} mm (past anders niet in de kap).`);
         spacing = maxS;
