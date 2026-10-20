@@ -6,5 +6,5 @@ export default defineConfig({
   worker: { format: 'es' },
   build: { target: 'es2022', chunkSizeWarningLimit: 1500 },
   optimizeDeps: { exclude: ['manifold-3d'] },
-  test: { environment: 'node', testTimeout: 120000 },
+  test: { environment: 'node', testTimeout: 120000, include: ['tests/**/*.test.ts'] },
 });

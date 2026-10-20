@@ -1,4 +1,5 @@
 import type { Manifold, ManifoldToplevel } from 'manifold-3d';
+import type { Font } from 'opentype.js';
 
 export type ParamValue = number | string | boolean;
 
@@ -36,13 +37,33 @@ export interface BoolParam extends ParamBase {
   default: boolean;
 }
 
+/** Free text, e.g. custom numerals or a name on a clock face. */
+export interface TextParam extends ParamBase {
+  type: 'text';
+  default: string;
+  maxLength?: number;
+  placeholder?: string;
+}
+
+/**
+ * A file the user uploads. The value is an asset key ('upload:<id>') or ''
+ * when nothing is chosen; the tool reads the asset through `ctx.assets`.
+ */
+export interface FileParam extends ParamBase {
+  type: 'file';
+  /** 'font' = TTF/OTF/WOFF, 'shape' = SVG outline. */
+  asset: 'font' | 'shape';
+  accept: string;
+  default: '';
+}
+
 export interface GroupHeader {
   type: 'group';
   label: string;
   show?: (p: Params) => boolean;
 }
 
-export type ParamDef = NumberParam | SelectParam | BoolParam | GroupHeader;
+export type ParamDef = NumberParam | SelectParam | BoolParam | TextParam | FileParam | GroupHeader;
 
 export interface Preset {
   name: string;
@@ -58,9 +79,32 @@ export interface PrinterProfile {
   z: number;
 }
 
+/**
+ * External data a build needs (fonts, uploaded outlines). Keys:
+ * - fonts: 'bundled:<id>' (shipped Google Font), 'google:<family>:<weight>'
+ *   (any Google Font, fetched from the Fontsource CDN) or 'upload:<id>'
+ * - shapes: 'upload:<id>' (an uploaded SVG converted to polygons)
+ */
+export type AssetRef = { kind: 'font' | 'shape'; key: string };
+
+/** Outline polygons (y up, CCW outer / CW holes) normalised to fit a unit square around the origin. */
+export interface ShapeAsset {
+  name: string;
+  polygons: [number, number][][];
+  /** width / height of the original drawing */
+  aspect: number;
+}
+
+export interface AssetStore {
+  /** Parsed font; throws a UserError when it was not loaded. */
+  font(key: string): Font;
+  shape(key: string): ShapeAsset;
+}
+
 export interface BuildContext {
   M: ManifoldToplevel;
   printer: PrinterProfile;
+  assets: AssetStore;
 }
 
 export interface MeshData {
@@ -118,6 +162,8 @@ export interface ToolDef {
   params: ParamDef[];
   presets?: Preset[];
   randomize?: (p: Params) => Partial<Params>;
+  /** Fonts/shapes this build needs; loaded before `build` runs. */
+  assets?: (p: Params) => AssetRef[];
   build(p: Params, ctx: BuildContext): BuildOutput;
 }
 
@@ -150,6 +196,16 @@ export interface BuildResult {
   defaultView: 'plate' | 'assembly';
   ms: number;
 }
+
+/** Store used when a build needs no assets. */
+export const NO_ASSETS: AssetStore = {
+  font: (key) => {
+    throw new UserError(`Lettertype niet geladen: ${key}`);
+  },
+  shape: (key) => {
+    throw new UserError(`Vorm niet geladen: ${key}`);
+  },
+};
 
 export function defaultsOf(defs: ParamDef[]): Params {
   const out: Params = {};

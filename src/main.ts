@@ -1,12 +1,13 @@
 import './styles.css';
 import { TOOLS, TOOL_MAP } from './tools';
-import { defaultsOf, type BuildResult, type Params, type ParamValue, type PartResult, type PrinterProfile, type ToolDef } from './core/types';
+import { defaultsOf, type BuildResult, type FileParam, type Params, type ParamValue, type PartResult, type PrinterProfile, type ShapeAsset, type ToolDef } from './core/types';
 import { DEFAULT_PRINTER, PRINTERS, fitsOn } from './core/printer';
 import { GeometryClient } from './core/client';
 import { arrange, plateOffset } from './core/layout';
 import { build3MF, buildSTL, download, slug, type ExportObject } from './core/export';
 import { Viewer, type ViewMode } from './ui/viewer';
-import { buildForm, type FormHandle } from './ui/form';
+import { buildForm, type FileHooks, type FormHandle } from './ui/form';
+import { svgToShape } from './ui/svg';
 
 const $ = <T extends HTMLElement = HTMLElement>(sel: string) => document.querySelector(sel) as T;
 
@@ -327,6 +328,93 @@ function exportPart(i: number) {
 }
 
 // ---------------------------------------------------------------------------
+// Uploaded fonts and SVG outlines (kept in this browser so a reload keeps them)
+
+interface StoredUpload {
+  name: string;
+  kind: 'font' | 'shape';
+  /** base64 font bytes, or the converted outline */
+  data: string | ShapeAsset;
+}
+
+const uploadNames = new Map<string, string>();
+
+function hashText(s: string) {
+  // FNV-1a, enough to recognise the same file again
+  let h = 0x811c9dc5;
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i);
+    h = Math.imul(h, 0x01000193);
+  }
+  return (h >>> 0).toString(36);
+}
+
+function bytesToBase64(bytes: Uint8Array) {
+  let bin = '';
+  for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+  return btoa(bin);
+}
+
+function base64ToBytes(b64: string) {
+  const bin = atob(b64);
+  const out = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+  return out;
+}
+
+function rememberUpload(key: string, u: StoredUpload) {
+  uploadNames.set(key, u.name);
+  try {
+    const raw = JSON.stringify(u);
+    if (raw.length > 1_500_000) return; // too big for browser storage: kept for this visit only
+    store.set(`upload:${key}`, raw);
+    const index = new Set(JSON.parse(store.get('uploads') ?? '[]') as string[]);
+    index.add(key);
+    store.set('uploads', JSON.stringify([...index]));
+  } catch {
+    // storage full or unavailable
+  }
+}
+
+function restoreUploads() {
+  try {
+    for (const key of JSON.parse(store.get('uploads') ?? '[]') as string[]) {
+      const raw = store.get(`upload:${key}`);
+      if (!raw) continue;
+      const u = JSON.parse(raw) as StoredUpload;
+      uploadNames.set(key, u.name);
+      if (u.kind === 'font') client.put({ type: 'font', key, bytes: base64ToBytes(u.data as string).buffer });
+      else client.put({ type: 'shape', key, shape: u.data as ShapeAsset });
+    }
+  } catch {
+    // corrupt or unavailable storage: start without earlier uploads
+  }
+}
+
+const fileHooks: FileHooks = {
+  async upload(def: FileParam, file: File) {
+    if (def.asset === 'font') {
+      if (/\.woff2$/i.test(file.name)) throw new Error('WOFF2 wordt niet ondersteund: gebruik TTF, OTF of WOFF.');
+      if (!/\.(ttf|otf|woff)$/i.test(file.name)) throw new Error('Kies een lettertype (.ttf, .otf of .woff).');
+      const bytes = new Uint8Array(await file.arrayBuffer());
+      const b64 = bytesToBase64(bytes);
+      const key = `upload:${hashText(b64)}`;
+      client.put({ type: 'font', key, bytes: bytes.buffer.slice(0) });
+      rememberUpload(key, { name: file.name, kind: 'font', data: b64 });
+      return key;
+    }
+    if (!/\.svg$/i.test(file.name) && file.type !== 'image/svg+xml') throw new Error('Kies een SVG-bestand.');
+    const text = await file.text();
+    const shape = svgToShape(text, file.name);
+    const key = `upload:${hashText(text)}`;
+    client.put({ type: 'shape', key, shape });
+    rememberUpload(key, { name: file.name, kind: 'shape', data: shape });
+    return key;
+  },
+  label: (key) => uploadNames.get(key) ?? 'Geüpload bestand (niet meer beschikbaar)',
+};
+
+// ---------------------------------------------------------------------------
 // Tool switching & controls
 
 let form: FormHandle | null = null;
@@ -351,7 +439,7 @@ function selectTool(tool: ToolDef, params?: Params) {
   const presets = $<HTMLSelectElement>('#presets');
   presets.innerHTML = '<option value="">Voorbeelden…</option>' + (tool.presets ?? []).map((p, i) => `<option value="${i}">${escapeHtml(p.name)}</option>`).join('');
   $('#random').hidden = !tool.randomize;
-  form = buildForm($('#form'), tool.params, state.params, onParam);
+  form = buildForm($('#form'), tool.params, state.params, onParam, fileHooks);
   persist();
   showError(null);
   scheduleBuild();
@@ -476,5 +564,6 @@ function setupChrome() {
 }
 
 setupChrome();
+restoreUploads();
 const initial = decodeHash();
 selectTool(initial?.tool ?? TOOLS[0], initial?.params);

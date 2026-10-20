@@ -1,6 +1,8 @@
-import type { BuildResult, Params, PrinterProfile } from './types';
+import type { BuildResult, Params, PrinterProfile, ShapeAsset } from './types';
 
 type Pending = { resolve: (r: BuildResult) => void; reject: (e: Error) => void };
+type Upload = { type: 'font'; key: string; bytes: ArrayBuffer } | { type: 'shape'; key: string; shape: ShapeAsset };
+type Runner = (tool: string, params: Params, printer: PrinterProfile) => Promise<BuildResult>;
 
 /**
  * Talks to the geometry worker. Falls back to building on the main thread
@@ -10,7 +12,9 @@ export class GeometryClient {
   private worker: Worker | null = null;
   private seq = 0;
   private pending = new Map<number, Pending>();
-  private fallback: Promise<(tool: string, params: Params, printer: PrinterProfile) => BuildResult> | null = null;
+  private fallback: Promise<{ run: Runner; put: (u: Upload) => void }> | null = null;
+  /** Uploaded fonts/shapes, re-sent to a fresh worker after a restart. */
+  private uploads = new Map<string, Upload>();
 
   constructor() {
     this.worker = this.spawn();
@@ -39,6 +43,7 @@ export class GeometryClient {
         for (const [, p] of this.pending) p.reject(new Error('worker-restart'));
         this.pending.clear();
       };
+      for (const u of this.uploads.values()) this.send(w, u);
       return w;
     } catch (err) {
       console.warn('Workers unavailable, using main thread', err);
@@ -46,17 +51,42 @@ export class GeometryClient {
     }
   }
 
+  private send(w: Worker, u: Upload) {
+    // copy font bytes: the worker may be replaced and needs them again
+    if (u.type === 'font') w.postMessage({ type: 'font', key: u.key, bytes: u.bytes.slice(0) });
+    else w.postMessage({ type: 'shape', key: u.key, shape: u.shape });
+  }
+
+  /** Make an uploaded font or shape available to builds under `key`. */
+  put(u: Upload) {
+    this.uploads.set(u.key, u);
+    if (this.worker) this.send(this.worker, u);
+    this.fallback?.then((f) => f.put(u));
+  }
+
   private loadFallback() {
     if (!this.fallback) {
       this.fallback = (async () => {
-        const [{ initManifold }, { runBuild }, { TOOL_MAP }, wasm] = await Promise.all([
+        const [{ initManifold }, { runBuild }, { TOOL_MAP }, { AssetCache, browserSource }, { FONT_URLS }, wasm] = await Promise.all([
           import('./manifold'),
           import('./engine'),
           import('../tools'),
+          import('./assets'),
+          import('./fontUrls'),
           import('manifold-3d/manifold.wasm?url'),
         ]);
         const M = await initManifold(wasm.default);
-        return (tool: string, params: Params, printer: PrinterProfile) => runBuild(M, TOOL_MAP[tool], params, printer);
+        const cache = new AssetCache(browserSource(FONT_URLS));
+        const put = (u: Upload) => (u.type === 'font' ? cache.putFontBytes(u.key, u.bytes.slice(0)) : cache.putShape(u.key, u.shape));
+        for (const u of this.uploads.values()) put(u);
+        const run: Runner = async (tool, params, printer) => {
+          const def = TOOL_MAP[tool];
+          await cache.ensure(def.assets?.(params) ?? []);
+          // let the UI paint the "busy" state before blocking
+          await new Promise((r) => setTimeout(r, 0));
+          return runBuild(M, def, params, printer, cache);
+        };
+        return { run, put };
       })();
     }
     return this.fallback;
@@ -69,15 +99,13 @@ export class GeometryClient {
       try {
         return await new Promise<BuildResult>((resolve, reject) => {
           this.pending.set(id, { resolve, reject });
-          w.postMessage({ id, tool, params, printer });
+          w.postMessage({ type: 'build', id, tool, params, printer });
         });
       } catch (err) {
         if ((err as Error).message !== 'worker-restart') throw err;
       }
     }
-    const run = await this.loadFallback();
-    // let the UI paint the "busy" state before blocking
-    await new Promise((r) => setTimeout(r, 0));
+    const { run } = await this.loadFallback();
     return run(tool, params, printer);
   }
 }

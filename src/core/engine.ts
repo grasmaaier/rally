@@ -1,6 +1,6 @@
 import type { Manifold, ManifoldToplevel } from 'manifold-3d';
 import { collect } from './registry';
-import { UserError, type BuildResult, type Params, type PartResult, type PrinterProfile, type SceneResult, type ToolDef } from './types';
+import { NO_ASSETS, UserError, type AssetStore, type BuildResult, type Params, type PartResult, type PrinterProfile, type SceneResult, type ToolDef } from './types';
 import { mul, translation } from '../geom/helpers';
 
 function meshOf(m: Manifold) {
@@ -18,10 +18,10 @@ function meshOf(m: Manifold) {
 }
 
 /** Run a tool and convert its manifolds into plain, transferable mesh data. */
-export function runBuild(M: ManifoldToplevel, tool: ToolDef, params: Params, printer: PrinterProfile): BuildResult {
+export function runBuild(M: ManifoldToplevel, tool: ToolDef, params: Params, printer: PrinterProfile, assets: AssetStore = NO_ASSETS): BuildResult {
   const t0 = performance.now();
   try {
-    const out = tool.build(params, { M, printer });
+    const out = tool.build(params, { M, printer, assets });
     const offsets: [number, number, number][] = [];
     const parts: PartResult[] = out.parts.map((p) => {
       const status = p.solid.status();

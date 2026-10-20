@@ -3,8 +3,8 @@ import type { BuildOutput, Params, PartOut, SceneItem, ToolDef } from '../core/t
 import { UserError, bool, num, str } from '../core/types';
 import { keep } from '../core/registry';
 import { TAU, roundedRect, teardrop, translation } from '../geom/helpers';
-import { type Surface, insetSurface, limitWaves, resolutionFor, shapeSurface, shellOfSurface, solidOfSurface } from '../geom/surface';
-import { shapeOptionsFrom, shapeParams } from './vase';
+import { type Surface, buildShape, insetSurface, shellOfSurface, solidOfSurface } from '../geom/surface';
+import { sectionAssets, shapeNotes, shapeOptionsFrom, shapeParams } from './vase';
 
 /** Radius of a surface at an actual (world) angle. */
 const rAt = (S: Surface, z: number, a: number) => S.r(z, a - S.phi(z));
@@ -32,6 +32,24 @@ function minRadiusAtAngle(S: Surface, z0: number, z1: number, a: number) {
   return m;
 }
 
+/** Radius of the largest circle around the axis that stays inside the surface between z0 and z1. */
+function minRadius(S: Surface, z0: number, z1: number) {
+  let m = Infinity;
+  for (let k = 0; k < 180; k++) m = Math.min(m, minRadiusAtAngle(S, z0, z1, (TAU * k) / 180));
+  return m;
+}
+
+/** True when a vertical circle (centre cx, cy; radius rc) stays inside the surface between z0 and z1. */
+function circleInside(S: Surface, cx: number, cy: number, rc: number, z0: number, z1: number) {
+  for (let i = 0; i < 24; i++) {
+    const a = (TAU * i) / 24;
+    const x = cx + rc * Math.cos(a);
+    const y = cy + rc * Math.sin(a);
+    if (Math.hypot(x, y) > minRadiusAtAngle(S, z0, z1, Math.atan2(y, x))) return false;
+  }
+  return true;
+}
+
 /**
  * Flatten a surface at y = yb (the back of a wall pot). The result is still a
  * radial graph around the axis, so shells built from it need no booleans.
@@ -47,7 +65,7 @@ function clipBack(S: Surface, yb: number): Surface {
   };
 }
 
-function build(p: Params, { M }: Parameters<ToolDef['build']>[1]): BuildOutput {
+function build(p: Params, { M, assets }: Parameters<ToolDef['build']>[1]): BuildOutput {
   const mount = str(p, 'mount');
   let water = str(p, 'water');
   const notes: string[] = [];
@@ -60,9 +78,9 @@ function build(p: Params, { M }: Parameters<ToolDef['build']>[1]): BuildOutput {
   const rb = num(p, 'bottomD') / 2;
   const belly = (num(p, 'belly') / 100) * Math.max(rt, rb) * 0.35;
   const radii = [rb, rb + (rt - rb) / 3 + belly, rb + (2 * (rt - rb)) / 3 + belly * 0.7, rt];
-  const { opts, limited } = limitWaves(shapeOptionsFrom(p, H, radii));
-  const shaped = shapeSurface(opts);
-  const { segs, rings } = resolutionFor(opts, 0.6);
+  const shape = buildShape(shapeOptionsFrom(p, H, radii, assets), 0.6);
+  const shaped = shape.S;
+  const { segs, rings, zs } = shape;
   const wall = num(p, 'wall');
   const bottomT = num(p, 'bottomT');
   const parts: PartOut[] = [];
@@ -79,11 +97,12 @@ function build(p: Params, { M }: Parameters<ToolDef['build']>[1]): BuildOutput {
   const Sin = insetSurface(S, wall);
 
   // ---- outer pot (also the reservoir for self-watering)
-  let outer = shellOfSurface(M, S, Sin, { z0: 0, z1: H, floor: bottomT, segs, rings });
+  let outer = shellOfSurface(M, S, Sin, { z0: 0, z1: H, floor: bottomT, segs, rings, zs });
   if (water === 'drain') {
     const holes: Manifold[] = [M.Manifold.cylinder(bottomT + 2, 4, 4, 24).translate([0, 0, -1])];
-    const rr = minRadiusAtAngle(Sin, bottomT, bottomT + 1, 0) * 0.5;
-    for (let i = 0; i < 5; i++) {
+    // ring of holes well inside the narrowest part of the floor (stars, crosses, hearts)
+    const rr = Math.min(minRadiusAtAngle(Sin, bottomT, bottomT + 1, 0) * 0.5, minRadius(Sin, bottomT, bottomT + 1) - 4.5);
+    for (let i = 0; i < 5 && rr >= 7.5; i++) {
       const a = (TAU * i) / 5;
       holes.push(M.Manifold.cylinder(bottomT + 2, 2.5, 2.5, 16).translate([rr * Math.cos(a), rr * Math.sin(a), -1]));
     }
@@ -98,9 +117,19 @@ function build(p: Params, { M }: Parameters<ToolDef['build']>[1]): BuildOutput {
     const tabs: Manifold[] = [];
     const cuts: Manifold[] = [];
     const tabRoots: { a: number; r: number }[] = [];
+    // the outer reach of the rim near each nominal tab angle: tabs move (≤ 25°) onto lobes, not into notches
+    const reach = (a: number) => Math.min(rAt(S, H, a), rAt(S, H - tabH - tabL, a));
     for (let i = 0; i < n; i++) {
-      const a = (TAU * i) / n + Math.PI / 2;
-      const Rw = Math.min(rAt(S, H, a), rAt(S, H - tabH - tabL, a));
+      let a = (TAU * i) / n + Math.PI / 2;
+      let best = reach(a);
+      for (let k = -10; k <= 10; k++) {
+        const b = a + (k * Math.PI) / 72;
+        if (reach(b) > best + 0.5) {
+          best = reach(b);
+          a = b;
+        }
+      }
+      const Rw = reach(a);
       const pts: Vec3[] = [];
       for (const side of [-1, 1]) {
         const off = (side * tw) / 2;
@@ -110,13 +139,19 @@ function build(p: Params, { M }: Parameters<ToolDef['build']>[1]): BuildOutput {
       tabs.push(M.Manifold.hull(pts));
       tabRoots.push({ a, r: Rw - wall * 0.6 });
       const hr = Rw + tabL - cord / 2 - 2.5;
-      cuts.push(M.Manifold.cylinder(H + 2, cord / 2, cord / 2, 20).translate([hr * Math.cos(a), hr * Math.sin(a), 0]));
+      // only through the tab: a bulging wall further down must stay closed
+      cuts.push(M.Manifold.cylinder(tabH + tabL + 3, cord / 2, cord / 2, 20).translate([hr * Math.cos(a), hr * Math.sin(a), H - tabH - tabL - 1]));
     }
-    outer = M.Manifold.union([outer, ...tabs]);
-    // only when a wavy profile lets a tab root poke into the pot, clear the inside
-    const intrudes = tabRoots.some(({ a, r }) => minRadiusAtAngle(Sin, H - 21, H, a) < r + 0.2);
-    if (intrudes) outer = outer.subtract(solidOfSurface(M, Sin, bottomT, H + 1, segs, Math.max(8, Math.round(rings / 2))));
-    outer = outer.subtract(M.Manifold.compose(cuts));
+    // a tab may poke into the pot where the wall is wavy or notched: clip the tabs (not the
+    // whole pot) to a cavity that reaches 0.05 mm into the wall, so no faces coincide
+    const z0 = H - tabH - tabL - 2;
+    let tabSolid = M.Manifold.union(tabs);
+    const intrudes = tabRoots.some(({ a, r }) => minRadiusAtAngle(Sin, z0, H, a) < r + 0.2) || shape.zs || (shape.opts.organic ?? 0) > 0 || str(p, 'section') !== 'round';
+    if (intrudes) {
+      const cavity = solidOfSurface(M, insetSurface(S, wall - 0.05), z0, H + 1, segs, Math.max(8, Math.round((rings * (H + 1 - z0)) / H) + 4), zs);
+      tabSolid = tabSolid.subtract(cavity);
+    }
+    outer = M.Manifold.union([outer, tabSolid]).subtract(M.Manifold.compose(cuts));
     tips.push(`Rijg ${n} koorden (Ø${cord - 0.5} mm of dunner) door de lipjes; de schuine onderkant print zonder support.`);
   }
   if (mount === 'wall') {
@@ -162,7 +197,8 @@ function build(p: Params, { M }: Parameters<ToolDef['build']>[1]): BuildOutput {
     const yi = yBack - backT - gap;
     const Sgap0 = insetSurface(S, wall + gap);
     const Sgap = mount === 'wall' ? clipBack(Sgap0, yi) : Sgap0;
-    const rwo = Math.min(num(p, 'wickD') / 2 + wi, minRadiusAtAngle(Sgap, H * 0.2, H * 0.5, 0) * 0.45);
+    // the wick column must fit inside the narrowest part of the shape (all angles, not just one)
+    const rwo = Math.min(num(p, 'wickD') / 2 + wi, minRadius(Sgap, H * 0.2, H * 0.5) * 0.45, minRadiusAtAngle(Sgap, H * 0.2, H * 0.5, 0) * 0.45);
     const zTip = bottomT + 1.5;
     let hr = num(p, 'reservoir');
     let Rh = maxRadius(Sgap, hr, hr + 0.01);
@@ -185,7 +221,7 @@ function build(p: Params, { M }: Parameters<ToolDef['build']>[1]): BuildOutput {
     const Sip2 = insetSurface(Sip, wi);
     const ringsIn = Math.round(Math.max(rings, (H - zTip) / 1.5));
     // the body reaches 0.5 mm into the flange so the two fuse; the flange rests exactly on the rim
-    let inner = shellOfSurface(M, Sip, Sip2, { z0: zTip, z1: H + 0.5, floor: zTip + 1.6, segs, rings: ringsIn });
+    let inner = shellOfSurface(M, Sip, Sip2, { z0: zTip, z1: H + 0.5, floor: zTip + 1.6, segs, rings: ringsIn, zs });
     const flangeH = 2.4;
     const rimShape = mount === 'wall' ? clipBack(S, yi) : S;
     const rimOuter: Surface = { phi: () => S.phi(H), r: (_z, th) => rimShape.r(H, th) };
@@ -203,7 +239,9 @@ function build(p: Params, { M }: Parameters<ToolDef['build']>[1]): BuildOutput {
       const a = -Math.PI / 2;
       const rf = num(p, 'fillD') / 2;
       const rfo = rf + 1.6;
-      const Rt = minRadiusAtAngle(Sip2, hr + 1, H, a) - rfo - 0.4;
+      let Rt = minRadiusAtAngle(Sip2, hr + 1, H, a) - rfo - 0.4;
+      // narrow tips (heart, drop, star points): move the tube inward until it fits between the walls
+      while (Rt > rwo + rfo + 4 && !circleInside(Sip2, Rt * Math.cos(a), Rt * Math.sin(a), rfo + 0.4, hr + 1, H)) Rt -= 1;
       if (Rt > rwo + rfo + 4) {
         const zc = hr - (rAt(Sip, hr, a) - Rt) - 2;
         const cx = Rt * Math.cos(a);
@@ -246,8 +284,11 @@ function build(p: Params, { M }: Parameters<ToolDef['build']>[1]): BuildOutput {
     const ribH = 3;
     const saucer = base.offset(gapS + sw, 'Round').extrude(sh).subtract(base.offset(gapS, 'Round').extrude(sh).translate([0, 0, sw]));
     const ribs: Manifold[] = [];
-    const rr = minRadiusAtAngle(S, 0, 0.1, 0);
-    for (let i = 0; i < 3; i++) ribs.push(M.Manifold.cube([rr * 0.75, 2.4, ribH + 0.01]).translate([rr * 0.15, -1.2, sw - 0.01]).rotate([0, 0, 120 * i + 90]));
+    for (let i = 0; i < 3; i++) {
+      // each rib stays under the pot along its own direction
+      const rr = minRadiusAtAngle(S, 0, 0.1, (TAU * (120 * i + 90)) / 360);
+      ribs.push(M.Manifold.cube([rr * 0.75, 2.4, ribH + 0.01]).translate([rr * 0.15, -1.2, sw - 0.01]).rotate([0, 0, 120 * i + 90]));
+    }
     parts.push({ name: 'Schotel', solid: saucer.add(M.Manifold.union(ribs)) });
     scene.push({ kind: 'part', part: parts.length - 1, matrix: translation(0, 0, -(sw + ribH)) });
     tips.push('De pot staat op ribbels in de schotel zodat overtollig water weg kan lopen.');
@@ -268,7 +309,7 @@ function build(p: Params, { M }: Parameters<ToolDef['build']>[1]): BuildOutput {
     tips.push('De ophangring verzamelt de koorden; hang hem aan een haak door het middengat.');
   }
 
-  if (limited) notes.push(`Golven afgezwakt tot ${(opts.waveAmp * 100).toFixed(1)}% zodat ze printbaar blijven. Gebruik minder golven voor meer diepte.`);
+  notes.push(...shapeNotes(shape));
   warnings.push(...notes);
   info.push({
     kind: 'kv',
@@ -290,7 +331,7 @@ export const planterTool: ToolDef = {
   name: 'Plantenpotten',
   short: 'Potten',
   icon: 'M6 8h12l-1.5 12h-9zM5 8h14M12 8V5M12 5c-2-3-5-2-5-2s1 3 5 2zM12 5c2-3 5-2 5-2s-1 3-5 2z',
-  description: 'Plantenpotten die zichzelf water geven. Kies staand, hangend of aan de muur: het ontwerp past zich automatisch aan (schotel, ophanglipjes of vlakke achterkant met sleutelgaten).',
+  description: 'Plantenpotten die zichzelf water geven. Kies staand, hangend of aan de muur: het ontwerp past zich automatisch aan (schotel, ophanglipjes of vlakke achterkant met sleutelgaten). Met abstracte vormen, getrapte of bolle profielen en organische vervorming.',
   params: [
     { type: 'group', label: 'Plaats & water' },
     {
@@ -341,7 +382,13 @@ export const planterTool: ToolDef = {
     { name: 'Muurpot', values: { mount: 'wall', water: 'self', height: 140, topD: 160, bottomD: 120, belly: 0, section: 'round', twist: 0, backCut: 35 } },
     { name: 'Muurpot facetten', values: { mount: 'wall', water: 'self', height: 150, topD: 170, bottomD: 120, belly: 5, section: 'polygon', count: 8, rounding: 10, twist: 0, backCut: 25 } },
     { name: 'Vensterbankbak klein', values: { mount: 'stand', water: 'closed', height: 90, topD: 110, bottomD: 90, belly: 0, section: 'gear', count: 20, depth: 5, twist: 0 } },
+    { name: 'Bloempot met blaadjes', values: { mount: 'stand', water: 'self', height: 140, topD: 170, bottomD: 120, belly: 10, section: 'petals', count: 9, depth: 22, rounding: 55, twist: 20, twistMode: 'ease' } },
+    { name: 'Organische pot', values: { mount: 'stand', water: 'self', height: 150, topD: 160, bottomD: 120, belly: 25, section: 'blob', count: 4, depth: 30, seed: 21, twist: 0, organic: 12, organicScale: 50, organicSeed: 9 } },
+    { name: 'Getrapte pot', values: { mount: 'stand', water: 'drain', height: 130, topD: 160, bottomD: 110, belly: 0, section: 'round', twist: 0, profile: 'terraced', profileCount: 5, profileDepth: 45 } },
+    { name: 'Wolk hangpot', values: { mount: 'hang', water: 'self', height: 130, topD: 175, bottomD: 120, belly: 15, section: 'cloud', count: 6, depth: 45, seed: 4, twist: 0 } },
+    { name: 'Kristal muurpot', values: { mount: 'wall', water: 'self', height: 150, topD: 165, bottomD: 120, belly: 5, section: 'polygon', count: 7, rounding: 0, twist: 0, profile: 'facet', profileCount: 4, profileDepth: 30, organicSeed: 5, backCut: 30 } },
   ],
+  assets: sectionAssets,
   build,
 };
 

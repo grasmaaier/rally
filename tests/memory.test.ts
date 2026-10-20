@@ -1,5 +1,5 @@
 import { expect, it } from 'vitest';
-import { runBuild } from '../src/core/engine';
+import { buildTool } from './helpers';
 import { TOOLS } from '../src/tools';
 import { defaultsOf } from '../src/core/types';
 import { DEFAULT_PRINTER } from '../src/core/printer';
@@ -20,13 +20,13 @@ it('bouwen lekt geen WASM-geheugen', async () => {
   const { initManifold } = await import('../src/core/manifold');
   const M = await initManifold();
   const heap = () => (memory as WebAssembly.Memory | null)?.buffer.byteLength ?? 0;
-  const buildAll = () => {
-    for (const tool of TOOLS) runBuild(M, tool, defaultsOf(tool.params), DEFAULT_PRINTER);
+  const buildAll = async () => {
+    for (const tool of TOOLS) await buildTool(M, tool, defaultsOf(tool.params), DEFAULT_PRINTER);
   };
-  buildAll();
-  buildAll();
+  await buildAll();
+  await buildAll();
   const before = heap();
   expect(before).toBeGreaterThan(0);
-  for (let i = 0; i < 4; i++) buildAll();
+  for (let i = 0; i < 4; i++) await buildAll();
   expect((heap() - before) / 1e6).toBeLessThan(4);
 });

@@ -2,7 +2,7 @@ import { beforeAll, describe, expect, it } from 'vitest';
 import type { Manifold, ManifoldToplevel, Mat4 } from 'manifold-3d';
 import { initManifold } from '../src/core/manifold';
 import { collect, keep } from '../src/core/registry';
-import { runBuild } from '../src/core/engine';
+import { buildTool } from './helpers';
 import { TOOLS } from '../src/tools';
 import { defaultsOf, type Params } from '../src/core/types';
 import { DEFAULT_PRINTER } from '../src/core/printer';
@@ -18,12 +18,12 @@ beforeAll(async () => {
  */
 const cases = TOOLS.flatMap((t) =>
   (t.presets ?? []).map((p) => [t.id, p.name, { ...defaultsOf(t.params), ...p.values } as Params] as const),
-).filter(([id]) => ['meubels', 'plantenpot', 'gridfinity'].includes(id));
+);
 
 describe('samengestelde weergave', () => {
-  it.each(cases)('%s / %s: geen overlap', (id, _name, params) => {
+  it.each(cases)('%s / %s: geen overlap', async (id, _name, params) => {
     const tool = TOOLS.find((t) => t.id === id)!;
-    const res = runBuild(M, tool, params, DEFAULT_PRINTER);
+    const res = await buildTool(M, tool, params, DEFAULT_PRINTER);
     if (!res.scene) return;
     const solids: { label: string; m: Manifold }[] = [];
     try {
