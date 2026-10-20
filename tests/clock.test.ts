@@ -7,6 +7,16 @@ import { clockTool } from '../src/tools/clock';
 import { MOVEMENTS } from '../src/tools/clockParts';
 import { defaultsOf, type BuildResult, type Params, type PartResult } from '../src/core/types';
 
+// capture the WASM memory to check the leak-free wrappers (before manifold is instantiated)
+let memory: WebAssembly.Memory | null = null;
+const instantiate = WebAssembly.instantiate;
+(WebAssembly as { instantiate: unknown }).instantiate = async (...args: unknown[]) => {
+  const result = await (instantiate as (...a: unknown[]) => Promise<WebAssembly.WebAssemblyInstantiatedSource | WebAssembly.Instance>)(...args);
+  const instance = 'instance' in result ? result.instance : result;
+  for (const v of Object.values(instance.exports)) if (v instanceof WebAssembly.Memory) memory = v;
+  return result;
+};
+
 let M: ManifoldToplevel;
 beforeAll(async () => {
   M = await initManifold();
@@ -297,5 +307,35 @@ describe('klok: eigen vormen en lettertypes', () => {
       ['Z', 180],
       ['W', 270],
     ]);
+  });
+});
+
+describe('WASM-geheugen', () => {
+  it('extrude, revolve en toPolygons lekken niet (manifold-3d 3.5 deed dat wel)', () => {
+    const pts: [number, number][] = Array.from({ length: 200 }, (_, i) => [10 + 5 * Math.cos((i / 200) * 2 * Math.PI), 5 * Math.sin((i / 200) * 2 * Math.PI)]);
+    // not tracked, so collect() leaves it alone
+    const cs = new M.CrossSection([pts]);
+    const round = (n: number) => {
+      for (let i = 0; i < n; i++) {
+        cs.extrude(1);
+        cs.extrude(1, 0, 0, [0.5, 0.5], true);
+        cs.toPolygons();
+        if (i % 5 === 0) cs.revolve(8);
+        if (i % 50 === 0) collect();
+      }
+      collect();
+    };
+    const heap = () => (memory as WebAssembly.Memory | null)?.buffer.byteLength ?? 0;
+    round(200);
+    const before = heap();
+    expect(before).toBeGreaterThan(0);
+    // the old wrappers leaked about 12 kB per round here (~60 MB in total)
+    round(5000);
+    expect((heap() - before) / 1e6).toBeLessThan(2);
+    // a numeric scaleTop scales both directions
+    const top = cs.extrude(2, 0, 0, 0.5).slice(1.99).bounds();
+    expect(top.max[0]).toBeCloseTo(7.5, 1);
+    expect(top.max[1]).toBeCloseTo(2.5, 1);
+    cs.delete();
   });
 });
