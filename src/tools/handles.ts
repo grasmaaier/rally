@@ -1,9 +1,11 @@
-import type { Manifold, ManifoldToplevel, Vec2, Vec3 } from 'manifold-3d';
-import type { BuildOutput, Params, ToolDef } from '../core/types';
+import type { CrossSection, Manifold, ManifoldToplevel, Vec2, Vec3 } from 'manifold-3d';
+import type { AssetRef, AssetStore, BuildOutput, Params, ToolDef } from '../core/types';
 import { num, str } from '../core/types';
 import { keep } from '../core/registry';
-import { SCREWS, clamp, countersunk, filletExtrude, fixingHole, roundedRect, smoothstep } from '../geom/helpers';
+import { SCREWS, clamp, countersunk, filletExtrude, fixingHole, lerp, roundedRect, smoothstep } from '../geom/helpers';
 import { sectionFn } from '../geom/surface';
+import { effectiveSpec, shapeCross, type ShapeSpec } from '../geom/shapes2d';
+import { cushion, edgeRings, focusRings, gridSolid, polarGrid, radiiOf, rise, type PolarGrid } from '../geom/pillow';
 
 const SPACINGS = [64, 96, 128, 160, 192, 224, 256, 320];
 
@@ -113,6 +115,335 @@ function knob(M: ManifoldToplevel, p: Params) {
     tips.push('Geprint op de voet. Bij een brede kap kan "tree support" onder de rand nodig zijn.');
   }
   return { solid, tips };
+}
+
+// ---------------------------------------------------------------------------
+// Designy knobs: soft heads shaped from the 2D shape library
+
+const CLASSIC_STYLES = ['mushroom', 'cylinder', 'cone', 'ball'];
+
+export const DESIGN_STYLES = [
+  { value: 'cross', label: 'Kruis' },
+  { value: 'bloom', label: 'Echte bloem' },
+  { value: 'blob', label: 'Blob' },
+  { value: 'pebble', label: 'Kiezel' },
+  { value: 'star', label: 'Ster' },
+  { value: 'heart', label: 'Hart' },
+  { value: 'cloud', label: 'Wolk' },
+  { value: 'clover', label: 'Klaver' },
+  { value: 'drop', label: 'Druppel' },
+  { value: 'leaf', label: 'Blad' },
+  { value: 'ring', label: 'Ring / donut' },
+  { value: 'gear', label: 'Tandwiel' },
+  { value: 'superformula', label: 'Superformule' },
+  { value: 'custom', label: 'Eigen vorm (SVG uploaden)' },
+];
+
+type HeadUse = 'count' | 'depth' | 'rounding' | 'seed' | 'sf' | 'file' | 'hole';
+const HEAD_USES: Record<string, HeadUse[]> = {
+  cross: ['count', 'depth', 'rounding'],
+  bloom: ['count', 'depth', 'rounding'],
+  blob: ['count', 'depth', 'seed'],
+  pebble: ['depth', 'seed'],
+  star: ['count', 'depth', 'rounding'],
+  heart: [],
+  cloud: ['count', 'depth', 'seed'],
+  clover: ['count', 'depth'],
+  drop: ['rounding'],
+  leaf: ['depth'],
+  ring: ['hole'],
+  gear: ['count', 'depth'],
+  superformula: ['sf'],
+  custom: ['file'],
+};
+
+const isDesign = (p: Params) => str(p, 'type') === 'knob' && !CLASSIC_STYLES.includes(str(p, 'style'));
+const headUses = (what: HeadUse) => (p: Params) => isDesign(p) && (HEAD_USES[str(p, 'style')] ?? []).includes(what);
+
+/** Domed by nature: these never get a flat top to print on. */
+const DOMED = ['pebble', 'ring', 'bloom'];
+
+/** Narrowest feature (mm) a knob head may have, so arms and points do not snap off. */
+const MIN_FEATURE = 4;
+
+function headSpec(p: Params, style: string, D: number): ShapeSpec {
+  const spec: ShapeSpec = {
+    shape: style === 'bloom' ? 'petals' : style === 'pebble' ? 'blob' : style,
+    count: Math.round(num(p, 'headCount')),
+    depth: num(p, 'headDepth') / 100,
+    rounding: num(p, 'headRounding') / 100,
+    seed: num(p, 'headSeed'),
+    m: num(p, 'headM'),
+    n1: num(p, 'headN1'),
+    n2: num(p, 'headN2'),
+    n3: num(p, 'headN3'),
+    file: p.headFile ? str(p, 'headFile') : undefined,
+  };
+  if (style === 'cross') {
+    // arm half-width is (0.12 + 0.45·(1 − depth)) × radius: keep arms at least MIN_FEATURE + 0.5 mm wide
+    const w = (MIN_FEATURE + 0.5) / D;
+    spec.depth = Math.min(spec.depth, 1 - (w - 0.12) / 0.45);
+    spec.count = clamp(spec.count, 2, 8);
+  }
+  if (style === 'pebble') {
+    // a few soft, low harmonics: a stone polished smooth by water
+    spec.count = 3;
+    spec.depth = 0.05 + 0.4 * spec.depth;
+  }
+  if (style === 'bloom') {
+    spec.count = clamp(spec.count, 3, 12);
+    spec.depth = clamp(spec.depth, 0.2, 0.75);
+  }
+  return effectiveSpec(spec);
+}
+
+/** Recent head outlines: sliders that do not change the outline (height, puff, fixing) reuse them. */
+const outlineCache = new Map<string, { R: number[]; notes: string[] }>();
+
+/**
+ * Outline of a head as radii on N rays. Features narrower than MIN_FEATURE are
+ * opened away and inner corners get a small fillet; what is left is the main
+ * piece seen from the axis.
+ */
+function headOutline(M: ManifoldToplevel, spec: ShapeSpec, D: number, angle: number, assets: AssetStore | undefined, N: number, squash = 1) {
+  const key = JSON.stringify([spec, D, angle, N, squash]);
+  const hit = outlineCache.get(key);
+  if (hit) return hit;
+  const notes: string[] = [];
+  let cs: CrossSection = shapeCross(M, spec, D, assets, 360);
+  if (squash !== 1) cs = cs.scale([1, squash]);
+  if (angle) cs = cs.rotate(angle);
+  const area0 = cs.area();
+  const open = MIN_FEATURE / 2;
+  const eroded = cs.offset(-open, 'Round', 2, 32);
+  // grow back a bit further, then shrink: opens thin parts and rounds inner corners in three offsets
+  const soft = eroded.offset(open + 1.2, 'Round', 2, 32).offset(-1.2, 'Round', 2, 32);
+  let best: CrossSection | null = null;
+  let bestArea = 0;
+  for (const piece of soft.decompose()) {
+    const a = piece.area();
+    if (a > bestArea) {
+      bestArea = a;
+      best = piece;
+    }
+  }
+  if (!best || bestArea < 0.15 * Math.PI * (D / 2) ** 2 * 0.25) {
+    notes.push('Deze vorm is te fijn voor een knop van deze maat: de kop is rond gemaakt. Maak de knop groter of de punten minder diep.');
+    best = M.CrossSection.circle(D * 0.3, 96);
+  } else if (eroded.offset(open, 'Round', 2, 32).area() < area0 * 0.96) {
+    notes.push(`Dunne punten en armen zijn afgerond tot minstens ${MIN_FEATURE} mm breed, zodat ze niet afbreken.`);
+  }
+  const out = { R: radiiOf(best, N), notes };
+  if (outlineCache.size > 24) outlineCache.delete(outlineCache.keys().next().value as string);
+  outlineCache.set(key, out);
+  return out;
+}
+
+/** Radius of the hole a fixing needs (nut: corner of the hex). */
+function holeRadius(screw: string, mount: string) {
+  const s = SCREWS[screw] ?? SCREWS.M4;
+  return mount === 'nut' ? (s.nutAF + 0.3) / Math.sqrt(3) : mount === 'insert' ? s.insertD / 2 : s.pilot / 2;
+}
+
+/**
+ * Revolved stem from a radius profile r(z) on [0, z1] (use coordinates, z = 0
+ * at the door). `grow` is the print direction: the radius may widen at most
+ * 45° going up ('up' = printed on the foot, 'down' = printed hanging from the head).
+ */
+function stemOf(M: ManifoldToplevel, r: (z: number) => number, z1: number, grow: 'up' | 'down', n = 40) {
+  const zs = Array.from({ length: n + 1 }, (_, i) => 0.4 + ((z1 - 0.4) * i) / n);
+  const rs = zs.map((z) => Math.max(0.8, r(z)));
+  if (grow === 'up') for (let i = 1; i <= n; i++) rs[i] = Math.min(rs[i], rs[i - 1] + (zs[i] - zs[i - 1]));
+  else for (let i = n - 1; i >= 0; i--) rs[i] = Math.min(rs[i], rs[i + 1] + (zs[i + 1] - zs[i]));
+  // a small 45° chamfer at the door face against elephant's foot
+  const pts: Vec2[] = [[0, 0], [Math.max(0.4, rs[0] - 0.4), 0]];
+  for (let i = 0; i <= n; i++) pts.push([rs[i], zs[i]]);
+  pts.push([0, z1]);
+  return keep(new M.CrossSection([pts])).revolve(96);
+}
+
+interface HeadLayer {
+  g: PolarGrid;
+  /** Height above the head bottom of each grid point. */
+  top: (k: number) => number;
+  /** Bottom plane of the layer (use coordinates). */
+  z0: number;
+}
+
+/** Sunflower seeds: tiny bumps in a Vogel spiral, for the heart of the bloom. */
+function seedBumps(r: number) {
+  const c = Math.max(0.9, r / 6);
+  const seeds: [number, number][] = [];
+  for (let i = 1; c * Math.sqrt(i) < r - c * 0.6; i++) {
+    const a = i * 2.39996;
+    seeds.push([c * Math.sqrt(i) * Math.cos(a), c * Math.sqrt(i) * Math.sin(a)]);
+  }
+  seeds.push([0, 0]);
+  const rb = c * 0.48;
+  return (x: number, y: number) => {
+    let best = Infinity;
+    for (const [sx, sy] of seeds) best = Math.min(best, (x - sx) ** 2 + (y - sy) ** 2);
+    const t = Math.sqrt(best) / rb;
+    return t < 1 ? 0.35 * c * (1 - t * t) : 0;
+  };
+}
+
+function designKnob(M: ManifoldToplevel, p: Params, assets?: AssetStore) {
+  const style = str(p, 'style');
+  const D = num(p, 'knobD');
+  const H = num(p, 'knobH');
+  const screw = str(p, 'screw');
+  const mount = str(p, 'mount');
+  const s = SCREWS[screw] ?? SCREWS.M4;
+  const tips: string[] = [];
+  const warnings: string[] = [];
+  const holeR = holeRadius(screw, mount);
+  const minDepth = mount === 'nut' ? s.nutH + 4 : mount === 'insert' ? s.insertL + 1 : 8;
+  const th = clamp(num(p, 'headH'), 3, H - 4);
+  const zHB = H - th;
+  const puff = num(p, 'puff') / 100;
+  const edge = num(p, 'edge');
+  const angle = num(p, 'headAngle');
+  const N = 320;
+
+  // ---- outline(s)
+  const spec = headSpec(p, style, D);
+  if (str(p, 'style') === 'custom' && !p.headFile) tips.push('Kies een SVG-bestand voor je eigen vorm; tot die tijd is de kop rond.');
+  let R: number[];
+  if (style === 'ring') R = new Array(N).fill(D / 2);
+  else {
+    const o = headOutline(M, spec, D, angle, assets, N, style === 'pebble' ? 0.8 : 1);
+    R = o.R;
+    warnings.push(...o.notes);
+  }
+  const holeFrac = clamp(num(p, 'ringHole') / 100, 0.15, 0.7);
+  const rings = style === 'ring' ? focusRings(32, [holeFrac, 1], 0.08, 10) : edgeRings(34);
+  const g = polarGrid(R, rings);
+  const Rmax = g.rMax;
+  const baseR = Math.min(num(p, 'baseD') / 2, Rmax);
+  const rn0 = Math.min(Math.max(num(p, 'neckD') / 2, holeR + 1.6), Rmax);
+  const footR = Math.max(baseR, rn0);
+
+  // ---- print orientation: a flat top on the bed when the head allows it
+  const dC = g.d[0];
+  const rTop = Math.min(rn0, dC - 0.5);
+  const holeTop = Math.min(16, H - 2, zHB + rTop - holeR - 1.2);
+  const canTop = !DOMED.includes(style) && rTop >= holeR + 1.2 && holeTop >= minDepth;
+  const orient = str(p, 'orient');
+  let flat = orient === 'top' ? canTop : orient === 'base' ? false : canTop && puff <= 0.15;
+  if (orient === 'top' && !canTop) {
+    tips.push(DOMED.includes(style) ? 'Deze kop is bol: hij wordt op de voet geprint in plaats van op de bovenkant.' : 'De hals past niet binnen het midden van deze vorm: de knop wordt op de voet geprint.');
+  }
+
+  // ---- base-down geometry: a 45° cone from the neck carries the head
+  const zMin = 2.4;
+  let zApex = zHB - (Rmax - rn0);
+  let rn = rn0;
+  if (zApex < zMin) {
+    // too little height for the cone: widen the neck so the head is still carried at 45°
+    zApex = zMin;
+    rn = Math.min(Rmax, Rmax - (zHB - zMin));
+  }
+  // the stem widens at most 45° from the foot
+  const rnMax = footR + (zApex - 1.6);
+  const steep = rn > rnMax + 0.01;
+  if (steep) rn = rnMax;
+  if (!flat && steep && orient === 'auto' && canTop) flat = true;
+  if (!flat && steep) warnings.push('De kop is te breed voor deze hoogte om zonder support op de voet te printen: de rand hangt steiler over dan 45°. Maak de knop hoger, de kop kleiner of de hals breder.');
+  if (flat && puff > 0.15) tips.push('Geprint op de bovenkant: die is daarom vlak (de bolling vervalt).');
+
+  // ---- head layers
+  const layers: HeadLayer[] = [];
+  if (style === 'ring') {
+    const Ri = holeFrac * Rmax;
+    const Rc = (Rmax + Ri) / 2;
+    const a = (Rmax - Ri) / 2;
+    const side = Math.min(1, th * 0.2);
+    const A = th - side;
+    layers.push({
+      g,
+      z0: zHB,
+      top: (k) => {
+        const r = g.rho[k];
+        return r < Ri ? side : side + A * Math.sqrt(Math.max(0, 1 - ((r - Rc) / a) ** 2));
+      },
+    });
+  } else if (style === 'bloom') {
+    const t1 = th * 0.62;
+    const prof1 = cushion({ th: t1, puff: Math.max(puff, 0.45), edge, dMax: g.dMax, flat: false });
+    layers.push({ g, z0: zHB, top: (k) => prof1(g.d[k]) });
+    // second ring of petals, smaller and turned half a petal
+    const o2 = headOutline(M, spec, D * 0.66, angle + 180 / spec.count, assets, N);
+    const g2 = polarGrid(o2.R, edgeRings(28));
+    const z2 = zHB + th * 0.3;
+    const t2 = th * 0.55;
+    const prof2 = cushion({ th: t2, puff: Math.max(puff, 0.45), edge, dMax: g2.dMax, flat: false });
+    layers.push({ g: g2, z0: z2, top: (k) => prof2(g2.d[k]) });
+    // a domed heart with seeds
+    const rh = Math.max(3.5, Math.min(D * 0.14, g2.d[0] * 0.8));
+    const g3 = polarGrid(new Array(200).fill(rh), Array.from({ length: 22 }, (_, i) => (i + 1) / 22));
+    const z3 = zHB + th * 0.5;
+    const t3 = th * 0.5;
+    const bumps = seedBumps(rh);
+    layers.push({ g: g3, z0: z3, top: (k) => t3 * (0.25 + 0.75 * rise(g3.d[k] / rh)) + bumps(g3.x[k], g3.y[k]) });
+  } else {
+    const prof = cushion({ th, puff: style === 'pebble' ? Math.max(puff, 0.85) : puff, edge, dMax: g.dMax, flat, side: style === 'pebble' ? 0.8 : 1.2 });
+    // a pebble leans a little to one side
+    const tilt = style === 'pebble' ? (k: number) => 1 + (0.14 * g.x[k]) / Rmax : () => 1;
+    layers.push({ g, z0: zHB, top: (k) => prof(g.d[k]) * tilt(k) });
+  }
+
+  // ---- undersides and stem
+  const pieces: Manifold[] = [];
+  let stem: Manifold;
+  let depth: number;
+  if (flat) {
+    const lay = layers[0];
+    const rim0 = lay.top(1 + (lay.g.s.length - 1) * N);
+    const e2 = clamp(Math.min(edge * 0.6, rim0 - 0.6), 0, lay.g.dMax * 0.8);
+    pieces.push(gridSolid(M, lay.g, (k) => zHB + lay.top(k), (k) => zHB + (e2 > 0.05 ? e2 * (1 - rise(lay.g.d[k] / e2)) : 0)));
+    // stem: classic neck, but never wider than 45° from where it leaves the head (it prints hanging from it)
+    const neck = (z: number) => {
+      const t = clamp(z / zHB, 0, 1);
+      return lerp(footR, rn0, smoothstep(0.05, 0.6, t));
+    };
+    stem = stemOf(M, (z) => Math.min(neck(z), rTop + (zHB - z)), zHB + 0.4, 'down');
+    depth = Math.min(holeTop, H * 0.7);
+  } else {
+    // the cone grows from the neck with a soft fillet; inside the stem the head is flat
+    const b = clamp((zApex - 2) * 0.6, 0, 4);
+    const tq = b * Math.tan(Math.PI / 8);
+    const zTop = zApex + b * (1 - Math.SQRT1_2);
+    const zFlat = zTop + 1;
+    for (const lay of layers) {
+      const lg = lay.g;
+      // each layer gets its own 45° cone so overhanging petals are carried too
+      const apex = Math.max(zApex, lay.z0 - (lg.rMax - rn));
+      const flatL = apex + (zFlat - zApex);
+      pieces.push(gridSolid(M, lg, (k) => lay.z0 + lay.top(k), (k) => Math.min(lay.z0, Math.max(flatL, apex + lg.rho[k] - rn))));
+    }
+    const neck = (z: number) => {
+      if (z >= zTop) return rn + (z - zApex) - 0.15;
+      if (z >= zApex - tq) return rn + b - Math.sqrt(Math.max(0, b * b - (z - (zApex - tq)) ** 2));
+      const t = clamp(z / Math.max(1, zApex - tq), 0, 1);
+      return rn <= footR ? lerp(footR, rn, smoothstep(0.08, 0.75, t)) : Math.min(rn, footR + Math.max(0, z - 1.6));
+    };
+    stem = stemOf(M, neck, zFlat + 0.6, 'up');
+    let lowest = Infinity;
+    const lay = layers[0];
+    for (let k = 0; k < 1 + lay.g.s.length * N; k++) if (lay.g.rho[k] <= holeR + 1.5) lowest = Math.min(lowest, lay.z0 + lay.top(k));
+    depth = Math.min(16, H * 0.7, lowest - 1.6);
+  }
+  if (depth < minDepth) warnings.push(`Het schroefgat is maar ${depth.toFixed(1)} mm diep: maak de knop of de kop hoger voor meer grip.`);
+  let solid = M.Manifold.union([...pieces, stem]).subtract(fixingHole(M, screw, mount, Math.max(3, depth)));
+  if (flat) {
+    solid = solid.rotate([180, 0, 0]);
+    tips.push('Geprint met de bovenkant op het bed: een strak, vlak topvlak. De rand loopt onder 45° af, dus er is geen support nodig.');
+  } else {
+    tips.push('Geprint op de voet: de onderkant van de kop loopt onder 45° naar de hals, dus er is geen support nodig.');
+    if (style === 'bloom') tips.push('Mooi in twee kleuren: wissel van filament op de hoogte waar het hartje begint (pauze in Bambu Studio).');
+  }
+  return { solid, tips, warnings };
 }
 
 function bar(M: ManifoldToplevel, p: Params) {
@@ -261,9 +592,10 @@ function cup(M: ManifoldToplevel, p: Params) {
   };
 }
 
-function build(p: Params, { M }: Parameters<ToolDef['build']>[1]): BuildOutput {
+function build(p: Params, { M, assets }: Parameters<ToolDef['build']>[1]): BuildOutput {
   const type = str(p, 'type');
-  const res = type === 'bar' ? bar(M, p) : type === 'arch' ? arch(M, p) : type === 'cup' ? cup(M, p) : knob(M, p);
+  const res: { solid: Manifold; tips: string[]; warnings?: string[] } =
+    type === 'bar' ? bar(M, p) : type === 'arch' ? arch(M, p) : type === 'cup' ? cup(M, p) : isDesign(p) ? designKnob(M, p, assets) : knob(M, p);
   const tips = [...res.tips];
   const mount = str(p, 'mount');
   const s = SCREWS[str(p, 'screw')] ?? SCREWS.M4;
@@ -276,7 +608,12 @@ function build(p: Params, { M }: Parameters<ToolDef['build']>[1]): BuildOutput {
   const info: BuildOutput['info'] = [];
   if (type !== 'knob') info.push({ kind: 'kv', title: 'Maat', rows: [['Gatafstand (hart-op-hart)', `${spacing(p)} mm`]] });
   const names: Record<string, string> = { knob: 'Knop', bar: 'Staafgreep', arch: 'Beugelgreep', cup: 'Schelpgreep' };
-  return { parts: [{ name: names[type] ?? 'Greep', solid: res.solid, quantity: num(p, 'quantity') }], tips, info };
+  return { parts: [{ name: names[type] ?? 'Greep', solid: res.solid, quantity: num(p, 'quantity') }], tips, info, warnings: res.warnings ?? [] };
+}
+
+/** An uploaded SVG for the knob head. */
+function assetsOf(p: Params): AssetRef[] {
+  return isDesign(p) && str(p, 'style') === 'custom' && p.headFile ? [{ kind: 'shape', key: str(p, 'headFile') }] : [];
 }
 
 const is = (...t: string[]) => (p: Params) => t.includes(str(p, 'type'));
@@ -307,16 +644,36 @@ export const handlesTool: ToolDef = {
         { value: 'cylinder', label: 'Cilinder' },
         { value: 'cone', label: 'Trechter' },
         { value: 'ball', label: 'Bol' },
+        ...DESIGN_STYLES,
       ],
     },
-    { type: 'number', key: 'knobD', label: 'Diameter', min: 15, max: 80, step: 0.5, unit: 'mm', default: 32, show: is('knob') },
+    { type: 'number', key: 'knobD', label: 'Diameter / breedte', min: 15, max: 80, step: 0.5, unit: 'mm', default: 32, show: is('knob') },
     { type: 'number', key: 'knobH', label: 'Hoogte', min: 12, max: 60, step: 0.5, unit: 'mm', default: 26, show: is('knob') },
     { type: 'number', key: 'baseD', label: 'Diameter voet', min: 8, max: 60, step: 0.5, unit: 'mm', default: 18, show: is('knob') },
     { type: 'number', key: 'neckD', label: 'Diameter hals', min: 6, max: 50, step: 0.5, unit: 'mm', default: 13, show: is('knob') },
-    { type: 'number', key: 'dome', label: 'Bolling bovenkant', min: 0, max: 100, step: 5, unit: '%', default: 0, show: is('knob') },
+    { type: 'number', key: 'headH', label: 'Dikte kop', min: 4, max: 30, step: 0.5, unit: 'mm', default: 10, show: isDesign },
+    {
+      type: 'number', key: 'puff', label: 'Bolling (kussen)', min: 0, max: 100, step: 5, unit: '%', default: 60, show: isDesign,
+      help: '0% = vlakke bovenkant met ronde rand (wordt op de bovenkant geprint), 100% = helemaal opgeblazen.',
+    },
+    { type: 'number', key: 'headCount', label: 'Aantal (armen / punten / blaadjes)', min: 2, max: 24, step: 1, default: 5, show: headUses('count') },
+    { type: 'number', key: 'headDepth', label: 'Diepte / slankheid', min: 0, max: 90, step: 1, unit: '%', default: 45, show: headUses('depth') },
+    { type: 'number', key: 'headRounding', label: 'Afronding vorm', min: 0, max: 100, step: 1, unit: '%', default: 60, show: headUses('rounding') },
+    { type: 'number', key: 'headSeed', label: 'Variant (willekeurig getal)', min: 1, max: 999, step: 1, default: 7, show: headUses('seed') },
+    { type: 'number', key: 'ringHole', label: 'Kuil in het midden', min: 15, max: 70, step: 1, unit: '%', default: 40, show: headUses('hole') },
+    { type: 'number', key: 'headM', label: 'Superformule m (symmetrie)', min: 0, max: 16, step: 1, default: 5, show: headUses('sf') },
+    { type: 'number', key: 'headN1', label: 'Superformule n1', min: 0.2, max: 20, step: 0.1, default: 3, show: headUses('sf') },
+    { type: 'number', key: 'headN2', label: 'Superformule n2', min: 0.2, max: 20, step: 0.1, default: 6, show: headUses('sf') },
+    { type: 'number', key: 'headN3', label: 'Superformule n3', min: 0.2, max: 20, step: 0.1, default: 6, show: headUses('sf') },
+    {
+      type: 'file', key: 'headFile', label: 'SVG-bestand', asset: 'shape', accept: '.svg,image/svg+xml', default: '', show: headUses('file'),
+      help: 'Een gevulde vorm; de buitencontour wordt de kop (passend geschaald). Dunne delen worden afgerond tot minstens 4 mm.',
+    },
+    { type: 'number', key: 'headAngle', label: 'Draai kop', min: 0, max: 180, step: 5, unit: '°', default: 0, show: (p) => isDesign(p) && str(p, 'style') !== 'ring' },
+    { type: 'number', key: 'dome', label: 'Bolling bovenkant', min: 0, max: 100, step: 5, unit: '%', default: 0, show: (p) => is('knob')(p) && !isDesign(p) },
     { type: 'number', key: 'edge', label: 'Afronding rand', min: 0, max: 10, step: 0.5, unit: 'mm', default: 3, show: is('knob') },
     {
-      type: 'select', key: 'pattern', label: 'Grip', default: 'smooth', show: is('knob'),
+      type: 'select', key: 'pattern', label: 'Grip', default: 'smooth', show: (p) => is('knob')(p) && !isDesign(p),
       options: [
         { value: 'smooth', label: 'Glad' },
         { value: 'ribs', label: 'Ribbels' },
@@ -324,8 +681,8 @@ export const handlesTool: ToolDef = {
         { value: 'knurl', label: 'Kartel (ruit)' },
       ],
     },
-    { type: 'number', key: 'patternCount', label: 'Aantal', min: 3, max: 40, step: 1, default: 12, show: (p) => is('knob')(p) && str(p, 'pattern') !== 'smooth' },
-    { type: 'number', key: 'patternDepth', label: 'Diepte', min: 1, max: 20, step: 1, unit: '%', default: 6, show: (p) => is('knob')(p) && ['ribs', 'knurl'].includes(str(p, 'pattern')) },
+    { type: 'number', key: 'patternCount', label: 'Aantal', min: 3, max: 40, step: 1, default: 12, show: (p) => is('knob')(p) && !isDesign(p) && str(p, 'pattern') !== 'smooth' },
+    { type: 'number', key: 'patternDepth', label: 'Diepte', min: 1, max: 20, step: 1, unit: '%', default: 6, show: (p) => is('knob')(p) && !isDesign(p) && ['ribs', 'knurl'].includes(str(p, 'pattern')) },
     {
       type: 'select', key: 'orient', label: 'Printstand', default: 'auto', show: is('knob'),
       options: [
@@ -405,6 +762,7 @@ export const handlesTool: ToolDef = {
     { name: 'Beugel 128', values: { type: 'arch', spacing: '128', archShape: 'square', clearance: 28, archT: 9, archW: 14, cornerR: 10 } },
     { name: 'Schelpgreep 96', values: { type: 'cup', spacing: '96', cupDepth: 18, cupMargin: 9 } },
   ],
+  assets: assetsOf,
   build,
 };
 
