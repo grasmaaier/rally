@@ -743,7 +743,7 @@ function build(p: Params, { M, printer }: Parameters<ToolDef['build']>[1]): Buil
   if (mp.kind === 'keyhole') {
     tips.push('Steek eerst de zuignappen in de houder: kop door het ronde gat, dan omlaag drukken tot de hals bovenin de sleuf zit. Druk daarna de hele houder in één keer tegen de muur, dan kloppen de afstanden altijd.');
   } else if (mp.kind === 'hook') {
-    tips.push('Hang de houder met de ogen over de haakjes van de zuignappen. Zet de zuignappen precies op de afstand uit de tabel.');
+    tips.push('Haak de zuignappen eerst door de ogen van de houder en druk daarna de houder met zuignappen in één keer tegen de muur; dan kloppen de afstanden vanzelf.');
   } else {
     tips.push('Druk de pennen achterop de houder in de gaten van de zuignappen en druk daarna de houder met zuignappen tegen de muur.');
   }
@@ -810,7 +810,7 @@ const TYPE_OPTIONS = [
 const brushParams = (i: number, brand: string, type: string): ToolDef['params'] => [
   { type: 'group', label: `Borstel ${i}`, show: brushShown(i) },
   { type: 'select', key: `brand${i}`, label: 'Merk', default: brand, options: BRAND_OPTIONS, show: brushShown(i), help: 'Merkmaten zijn richtwaardes — meet je eigen borstel na of print de pasproef.' },
-  { type: 'select', key: `type${i}`, label: 'Houder', default: type, options: TYPE_OPTIONS, show: (p) => brushShown(i)(p) && isHolder(p) },
+  { type: 'select', key: `type${i}`, label: 'Houder', default: type, options: TYPE_OPTIONS, show: brushShown(i) },
 ];
 
 export const toothbrushTool: ToolDef = {
