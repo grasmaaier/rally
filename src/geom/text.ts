@@ -80,11 +80,24 @@ export function textPolygons(font: Font, text: string, size: number, letterSpaci
   const polys: Vec2[][] = [];
   let i = 0;
   font.forEachGlyph(text, 0, 0, size, { kerning: true }, (glyph, gx, gy, gs) => {
-    const path = glyph.getPath(gx + i * letterSpacing, gy, gs);
-    polys.push(...flatten(path.commands, Math.max(0.15, size / 120)));
+    // glyph 0 is the font's "missing character" box: leave a gap instead of printing it
+    if (glyph.index !== 0) {
+      const path = glyph.getPath(gx + i * letterSpacing, gy, gs);
+      polys.push(...flatten(path.commands, Math.max(0.15, size / 120)));
+    }
     i++;
   });
   return polys;
+}
+
+/** Characters of `text` the font has no glyph for (whitespace ignored), each listed once. */
+export function missingChars(font: Font, text: string): string[] {
+  const out: string[] = [];
+  for (const ch of Array.from(text)) {
+    if (/\s/.test(ch) || out.includes(ch)) continue;
+    if (font.charToGlyphIndex(ch) === 0) out.push(ch);
+  }
+  return out;
 }
 
 /**
