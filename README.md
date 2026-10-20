@@ -16,6 +16,7 @@ bekijk het model live in 3D en download een **3MF** die je direct in Bambu Studi
 | **Plantenpotten** | Zelfwaterende potten (reservoir + binnenpot met 45°-trechter, wiekkolom en vulbuisje). Kies **staand**, **hangend** of **aan de muur** en het ontwerp past zich aan: schotel met ribbels, ophanglipjes plus ophangring, of een vlakke achterkant met sleutelgaten. Toont ook hoeveel water en potgrond erin past. Alle vaasvormen en profielstijlen werken ook hier. |
 | **Klokken** | Nieuwe wijzerplaat, cijfers en wijzers voor een standaard quartz-uurwerk uit een oude klok. Wijzerplaat in elke vorm (ook eigen SVG) met rand en uitsparing achter; cijfers 1–12, Romeins, kwartieren of eigen tekst in 14 meegeleverde Google Fonts, elk Google Font op naam of een eigen fontbestand; acht wijzerstijlen of eigen SVG met gatmaten voor Europese en Amerikaanse uurwerken. Ook losse wandcijfers en een pasproef voor de wijzergaten. |
 | **Tandenborstelhouders** | Wandhouders voor elektrische tandenborstels (Philips Sonicare, Oral-B, Oral-B iO of eigen maat) die met losse zuignappen (bijv. Bambu HA011 40 mm) aan tegels of spiegel hangen: beker, ophangvork of opladerplank, opzetborstels en tandpasta. Merkmaten zijn richtwaarden; de pasproef controleert ze. |
+| **Generatief** | Organische, generatieve prints van een 3D-model: upload een **STL** (binair of tekst), **OBJ** of **3MF** of kies een ingebouwd voorwerp (telefoon, oordopjes-case, ei, bol). Maak er een nauwsluitende **hoes/kooi** van (instelbare speling en wand, open aan boven- of onderkant of in twee helften), een **standaard** met vertakte, botachtige stutten die het voorwerp schuin achterover houdt (rand, rugsteun, kabelsleuf, stabiliteitscontrole van het zwaartepunt) of een **lattice-versie** van het model zelf (geperforeerde huid of 3D-vakwerk). Patronen: Voronoi, organische blobs en gyroid, glad afgerond met signed distance fields. Grote modellen worden vereenvoudigd; modellen met gaten werken ook. |
 
 Verder:
 
@@ -57,8 +58,9 @@ Zet daarvoor één keer in de repository-instellingen **Settings → Pages → S
 ```
 src/
   core/      engine, worker, 3MF/STL-export, printerprofielen, plaatindeling
-  geom/      vormhulpmiddelen: omwentelingsoppervlakken, 2D-vormen, tekst, poten, afrondingen, schroefgaten
-  tools/     de acht ontwerptools (elk: parameters + bouwfunctie)
+  geom/      vormhulpmiddelen: omwentelingsoppervlakken, 2D-vormen, tekst, poten, afrondingen, schroefgaten,
+             afstandsvelden en patronen voor generatieve vormen, STL/OBJ/3MF inlezen
+  tools/     de negen ontwerptools (elk: parameters + bouwfunctie)
   ui/        3D-viewer en formulier
 tests/       geometrie-, samenstellings- en exporttests
 ```
