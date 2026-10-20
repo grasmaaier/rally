@@ -46,7 +46,7 @@ export function runBuild(M: ManifoldToplevel, tool: ToolDef, params: Params, pri
       };
     });
     const scene: SceneResult[] | undefined = out.scene?.map((s) => {
-      if (s.kind === 'box') return s;
+      if (s.kind !== 'part') return s;
       const d = offsets[s.part];
       return { kind: 'part', part: s.part, matrix: mul(s.matrix, translation(-d[0], -d[1], -d[2])) };
     });

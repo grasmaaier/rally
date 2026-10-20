@@ -5,12 +5,13 @@ import { runBuild } from './engine';
 import { AssetCache, browserSource } from './assets';
 import { FONT_URLS } from './fontUrls';
 import { TOOL_MAP } from '../tools';
-import type { Params, PrinterProfile, ShapeAsset } from './types';
+import type { MeshAsset, Params, PrinterProfile, ShapeAsset } from './types';
 
 type Req =
   | { type: 'build'; id: number; tool: string; params: Params; printer: PrinterProfile }
   | { type: 'font'; key: string; bytes: ArrayBuffer }
-  | { type: 'shape'; key: string; shape: ShapeAsset };
+  | { type: 'shape'; key: string; shape: ShapeAsset }
+  | { type: 'mesh'; key: string; mesh: MeshAsset };
 
 const ready = initManifold(wasmUrl);
 const assets = new AssetCache(browserSource(FONT_URLS));
@@ -20,6 +21,7 @@ self.onmessage = async (e: MessageEvent<Req>) => {
   const msg = e.data;
   if (msg.type === 'font') return assets.putFontBytes(msg.key, msg.bytes);
   if (msg.type === 'shape') return assets.putShape(msg.key, msg.shape);
+  if (msg.type === 'mesh') return assets.putMesh(msg.key, msg.mesh);
   const { id, tool, params, printer } = msg;
   try {
     const M = await ready;

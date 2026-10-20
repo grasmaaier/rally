@@ -1,7 +1,7 @@
-import type { BuildResult, Params, PrinterProfile, ShapeAsset } from './types';
+import type { BuildResult, MeshAsset, Params, PrinterProfile, ShapeAsset } from './types';
 
 type Pending = { resolve: (r: BuildResult) => void; reject: (e: Error) => void };
-type Upload = { type: 'font'; key: string; bytes: ArrayBuffer } | { type: 'shape'; key: string; shape: ShapeAsset };
+type Upload = { type: 'font'; key: string; bytes: ArrayBuffer } | { type: 'shape'; key: string; shape: ShapeAsset } | { type: 'mesh'; key: string; mesh: MeshAsset };
 type Runner = (tool: string, params: Params, printer: PrinterProfile) => Promise<BuildResult>;
 
 /**
@@ -54,6 +54,7 @@ export class GeometryClient {
   private send(w: Worker, u: Upload) {
     // copy font bytes: the worker may be replaced and needs them again
     if (u.type === 'font') w.postMessage({ type: 'font', key: u.key, bytes: u.bytes.slice(0) });
+    else if (u.type === 'mesh') w.postMessage({ type: 'mesh', key: u.key, mesh: u.mesh });
     else w.postMessage({ type: 'shape', key: u.key, shape: u.shape });
   }
 
@@ -77,7 +78,7 @@ export class GeometryClient {
         ]);
         const M = await initManifold(wasm.default);
         const cache = new AssetCache(browserSource(FONT_URLS));
-        const put = (u: Upload) => (u.type === 'font' ? cache.putFontBytes(u.key, u.bytes.slice(0)) : cache.putShape(u.key, u.shape));
+        const put = (u: Upload) => (u.type === 'font' ? cache.putFontBytes(u.key, u.bytes.slice(0)) : u.type === 'mesh' ? cache.putMesh(u.key, u.mesh) : cache.putShape(u.key, u.shape));
         for (const u of this.uploads.values()) put(u);
         const run: Runner = async (tool, params, printer) => {
           const def = TOOL_MAP[tool];
