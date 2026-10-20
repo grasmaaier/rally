@@ -8,7 +8,8 @@ import { planterTool } from './planter';
 import { clockTool } from './clock';
 import { toothbrushTool } from './toothbrush';
 import { lampTool } from './lamp';
+import { generativeTool } from './generative';
 
-export const TOOLS: ToolDef[] = [vaseTool, planterTool, clockTool, handlesTool, gridfinityTool, jointsTool, furnitureTool, toothbrushTool, lampTool];
+export const TOOLS: ToolDef[] = [vaseTool, planterTool, clockTool, handlesTool, gridfinityTool, jointsTool, furnitureTool, toothbrushTool, lampTool, generativeTool];
 
 export const TOOL_MAP: Record<string, ToolDef> = Object.fromEntries(TOOLS.map((t) => [t.id, t]));

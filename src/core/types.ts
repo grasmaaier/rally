@@ -51,8 +51,8 @@ export interface TextParam extends ParamBase {
  */
 export interface FileParam extends ParamBase {
   type: 'file';
-  /** 'font' = TTF/OTF/WOFF, 'shape' = SVG outline. */
-  asset: 'font' | 'shape';
+  /** 'font' = TTF/OTF/WOFF, 'shape' = SVG outline, 'mesh' = STL/OBJ/3MF model. */
+  asset: 'font' | 'shape' | 'mesh';
   accept: string;
   default: '';
 }
@@ -84,8 +84,9 @@ export interface PrinterProfile {
  * - fonts: 'bundled:<id>' (shipped Google Font), 'google:<family>:<weight>'
  *   (any Google Font, fetched from the Fontsource CDN) or 'upload:<id>'
  * - shapes: 'upload:<id>' (an uploaded SVG converted to polygons)
+ * - meshes: 'upload:<id>' (an uploaded STL/OBJ/3MF converted to triangles)
  */
-export type AssetRef = { kind: 'font' | 'shape'; key: string };
+export type AssetRef = { kind: 'font' | 'shape' | 'mesh'; key: string };
 
 /** Outline polygons (y up, CCW outer / CW holes) normalised to fit a unit square around the origin. */
 export interface ShapeAsset {
@@ -95,10 +96,22 @@ export interface ShapeAsset {
   aspect: number;
 }
 
+/** An uploaded 3D model: a triangle soup in millimetres (file units already applied when known). */
+export interface MeshAsset {
+  name: string;
+  positions: Float32Array;
+  indices: Uint32Array;
+  /** True when the file stated its units (3MF); STL/OBJ are assumed to be in mm. */
+  unitKnown: boolean;
+  /** Set when the upload was simplified to stay within the triangle budget. */
+  decimatedFrom?: number;
+}
+
 export interface AssetStore {
   /** Parsed font; throws a UserError when it was not loaded. */
   font(key: string): Font;
   shape(key: string): ShapeAsset;
+  mesh(key: string): MeshAsset;
 }
 
 export interface BuildContext {
@@ -137,6 +150,14 @@ export type SceneItem =
       part: number;
       /** Column-major 4x4 matrix mapping the part's original coordinates into the scene. */
       matrix: number[];
+    }
+  | {
+      /** A see-through reference object (e.g. an uploaded model), already in scene coordinates. */
+      kind: 'mesh';
+      mesh: MeshData;
+      color: string;
+      material: 'ghost';
+      label?: string;
     };
 
 export type InfoBlock =
@@ -185,6 +206,7 @@ export interface PartResult {
 
 export type SceneResult =
   | Extract<SceneItem, { kind: 'box' }>
+  | Extract<SceneItem, { kind: 'mesh' }>
   | { kind: 'part'; part: number; matrix: number[] };
 
 export interface BuildResult {
@@ -204,6 +226,9 @@ export const NO_ASSETS: AssetStore = {
   },
   shape: (key) => {
     throw new UserError(`Vorm niet geladen: ${key}`);
+  },
+  mesh: (key) => {
+    throw new UserError(`3D-model niet geladen: ${key}`);
   },
 };
 

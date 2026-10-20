@@ -170,6 +170,17 @@ export class Viewer {
     }
   }
 
+  /** A see-through reference model (e.g. the uploaded object a cover or stand is made for). */
+  private addGhostMesh(data: { positions: Float32Array; indices: Uint32Array }, color: string) {
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.BufferAttribute(data.positions, 3));
+    geo.setIndex(new THREE.BufferAttribute(data.indices, 1));
+    geo.computeVertexNormals();
+    this.geoms.push(geo);
+    const mat = new THREE.MeshStandardMaterial({ color, roughness: 0.6, transparent: true, opacity: 0.28, depthWrite: false, side: THREE.DoubleSide });
+    this.content.add(new THREE.Mesh(geo, mat));
+  }
+
   show(result: BuildResult, mode: ViewMode, printer: PrinterProfile, placements: Placement[], fitKey: string) {
     this.clearContent();
     this.printer = printer;
@@ -199,6 +210,8 @@ export class Viewer {
         if (s.kind === 'part') {
           const gb = geoms[s.part].boundingBox!.clone().applyMatrix4(new THREE.Matrix4().fromArray(s.matrix));
           box.union(gb);
+        } else if (s.kind === 'mesh') {
+          box.union(new THREE.Box3().setFromArray(s.mesh.positions));
         } else {
           box.union(new THREE.Box3(new THREE.Vector3(...s.position), new THREE.Vector3(s.position[0] + s.size[0], s.position[1] + s.size[1], s.position[2] + s.size[2])));
         }
@@ -208,6 +221,8 @@ export class Viewer {
       for (const s of result.scene) {
         if (s.kind === 'part') {
           this.addPart(geoms[s.part], new THREE.Matrix4().fromArray(s.matrix), cy, result.parts[s.part].color);
+        } else if (s.kind === 'mesh') {
+          this.addGhostMesh(s.mesh, s.color);
         } else {
           const geo = new THREE.BoxGeometry(...s.size);
           this.geoms.push(geo);
