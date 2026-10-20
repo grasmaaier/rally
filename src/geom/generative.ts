@@ -7,7 +7,7 @@
 import type { Manifold, ManifoldToplevel, Vec3 } from 'manifold-3d';
 import { UserError } from '../core/types';
 import { DistanceGrid, smax, smin, type Box3 } from './sdf';
-import { hash3, surfacePattern, volumePattern, type PatternOptions } from './patterns';
+import { SeedSet, hash3, surfacePattern, volumePattern, type PatternOptions } from './patterns';
 import { applyM4, mul, rotX, rotY, rotZ, type M4 } from './helpers';
 import { normalise, type BodyMesh } from './bodies';
 
@@ -95,6 +95,69 @@ function bodyGrid(body: Body, pad: number, h: number, cap: number) {
   return DistanceGrid.build(body.positions, body.indices, b, hh, Math.max(cap, 3 * hh));
 }
 
+/**
+ * Voronoi seeds spread evenly over the level set `d = level` of a distance
+ * grid: jittered candidates near the surface are projected onto it and
+ * thinned to a minimum spacing (Poisson-disk style), so holes are even in size.
+ */
+export function surfaceSeeds(grid: DistanceGrid, level: number, b: Box3, s: number, seed: number): SeedSet {
+  const g = s / 2;
+  const band = Math.min(g, grid.cap - Math.abs(level) - 2 * grid.h);
+  const minD = 0.8 * s;
+  const hash = new Map<number, number[]>();
+  const key = (p: number[]) => {
+    const i = Math.floor(p[0] / minD), j = Math.floor(p[1] / minD), k = Math.floor(p[2] / minD);
+    return ((i + 4096) * 8192 + (j + 4096)) * 8192 + (k + 4096);
+  };
+  const pts: number[] = [];
+  const rnd: number[] = [];
+  const e = grid.h;
+  const i0 = Math.floor(b.min[0] / g), i1 = Math.ceil(b.max[0] / g);
+  const j0 = Math.floor(b.min[1] / g), j1 = Math.ceil(b.max[1] / g);
+  const k0 = Math.floor(b.min[2] / g), k1 = Math.ceil(b.max[2] / g);
+  for (let k = k0; k <= k1; k++)
+    for (let j = j0; j <= j1; j++)
+      for (let i = i0; i <= i1; i++) {
+        const q = [(i + hash3(i, j, k, seed, 20)) * g, (j + hash3(i, j, k, seed, 21)) * g, (k + hash3(i, j, k, seed, 22)) * g];
+        let d = grid.sample(q[0], q[1], q[2]);
+        if (!(Math.abs(d - level) < band)) continue;
+        let ok = true;
+        for (let it = 0; it < 4; it++) {
+          const gx = grid.sample(q[0] + e, q[1], q[2]) - grid.sample(q[0] - e, q[1], q[2]);
+          const gy = grid.sample(q[0], q[1] + e, q[2]) - grid.sample(q[0], q[1] - e, q[2]);
+          const gz = grid.sample(q[0], q[1], q[2] + e) - grid.sample(q[0], q[1], q[2] - e);
+          const l = Math.hypot(gx, gy, gz);
+          if (l < 0.5 * e) {
+            ok = false;
+            break;
+          }
+          const step = (d - level) / l;
+          q[0] -= gx * step;
+          q[1] -= gy * step;
+          q[2] -= gz * step;
+          d = grid.sample(q[0], q[1], q[2]);
+        }
+        if (!ok || Math.abs(d - level) > 0.5 * s) continue;
+        const kk = key(q);
+        let close = false;
+        const ci = Math.floor(q[0] / minD), cj = Math.floor(q[1] / minD), ck = Math.floor(q[2] / minD);
+        for (let a = -1; a <= 1 && !close; a++)
+          for (let bb = -1; bb <= 1 && !close; bb++)
+            for (let c = -1; c <= 1 && !close; c++) {
+              const arr = hash.get(((ci + a + 4096) * 8192 + (cj + bb + 4096)) * 8192 + (ck + c + 4096));
+              if (arr) for (const n of arr) if ((pts[n * 3] - q[0]) ** 2 + (pts[n * 3 + 1] - q[1]) ** 2 + (pts[n * 3 + 2] - q[2]) ** 2 < minD * minD) close = true;
+            }
+        if (close) continue;
+        const n = pts.length / 3;
+        pts.push(q[0], q[1], q[2]);
+        rnd.push(hash3(i, j, k, seed, 23));
+        let arr = hash.get(kk);
+        if (!arr) hash.set(kk, (arr = []));
+        arr.push(n);
+      }
+  return new SeedSet(new Float64Array(pts), new Float64Array(rnd), s);
+}
+
 // ---------------------------------------------------------------------------
 // Meshing helpers
 
@@ -176,11 +239,13 @@ export function buildCage(M: ManifoldToplevel, body: Body, o: CageOptions): GenR
   const { edge } = chooseEdge(sizing, o.quality, Math.min(t, strut));
   const kEdge = o.pattern.smooth * Math.min(t, strut) * 0.45;
   const kJoin = o.pattern.smooth * strut * 0.8 + 0.2;
-  const grid = bodyGrid(body, out + 3 * edge + kJoin, edge, out + 3 * edge + kJoin);
+  const level = o.clearance + t / 2;
+  const reach = Math.max(out + 3 * edge + kJoin, level + 0.5 * o.pattern.cell + 3 * edge);
+  const grid = bodyGrid(body, reach, edge, reach);
   // a hair of extra clearance against interpolation error
   const cIn = o.clearance + 0.1 * edge;
   const cOut = o.clearance + t;
-  const pattern = surfacePattern(o.pattern);
+  const pattern = surfacePattern(o.pattern, o.pattern.kind === 'gyroid' ? undefined : surfaceSeeds(grid, level, grow(bb, out + 2), o.pattern.cell, o.pattern.seed));
   const rimH = Math.max(2.5, 1.6 * strut);
   const far = 1.5 * edge + kJoin;
   const parts: GenPart[] = [];
@@ -276,9 +341,9 @@ export function buildLattice(M: ManifoldToplevel, body: Body, o: LatticeOptions)
   const { edge } = chooseEdge(bounds(1), o.quality, feature);
   const kEdge = o.pattern.smooth * feature * 0.45;
   const kJoin = o.pattern.smooth * strut * 0.8 + 0.2;
-  const cap = Math.max(t, strut) + kJoin + 3 * edge;
+  const cap = Math.max(Math.max(t, strut) + kJoin + 3 * edge, skin ? t / 2 + 0.5 * o.pattern.cell + 3 * edge : 0);
   const grid = bodyGrid(body, 3 * edge + kJoin, edge, cap);
-  const surf = surfacePattern(o.pattern);
+  const surf = surfacePattern(o.pattern, skin && o.pattern.kind !== 'gyroid' ? surfaceSeeds(grid, -t / 2, bb, o.pattern.cell, o.pattern.seed) : undefined);
   const vol = volumePattern(o.pattern);
   const rimH = Math.max(2.5, 1.6 * strut);
   const far = 1.5 * edge + kJoin;
@@ -331,14 +396,23 @@ const norm = (a: V3): V3 => {
 /** A set of tapered capsules with a spatial hash for fast smooth-union evaluation. */
 class Capsules {
   private list: number[] = [];
+  /** Chain id per capsule: one smooth branch is a chain of capsules joined without bulges. */
+  private chain: number[] = [];
+  private chains = 0;
   private cells = new Map<number, number[]>();
   private cell = 1;
   private reach = 0;
   private clampTo = 0;
   maxR = 0;
 
+  /** Start a new branch: capsules added after this blend smoothly with earlier ones. */
+  newChain() {
+    this.chains++;
+  }
+
   add(a: V3, b: V3, ra: number, rb: number) {
     this.list.push(a[0], a[1], a[2], b[0], b[1], b[2], ra, rb);
+    this.chain.push(this.chains);
     this.maxR = Math.max(this.maxR, ra, rb);
   }
 
@@ -349,6 +423,8 @@ class Capsules {
   clone() {
     const c = new Capsules();
     c.list = [...this.list];
+    c.chain = [...this.chain];
+    c.chains = this.chains;
     c.maxR = this.maxR;
     return c;
   }
@@ -404,7 +480,10 @@ class Capsules {
     const arr = this.cells.get(this.key(Math.floor(x / c), Math.floor(y / c), Math.floor(z / c)));
     if (!arr) return this.clampTo;
     const L = this.list;
+    const C = this.chain;
     let v = Infinity;
+    let cur = -1;
+    let cm = Infinity;
     for (const n of arr) {
       const o = n * 8;
       const ax = L[o], ay = L[o + 1], az = L[o + 2];
@@ -415,8 +494,16 @@ class Capsules {
       t = t < 0 ? 0 : t > 1 ? 1 : t;
       const dx = px - bx * t, dy = py - by * t, dz = pz - bz * t;
       const d = Math.sqrt(dx * dx + dy * dy + dz * dz) - (L[o + 6] + (L[o + 7] - L[o + 6]) * t) * scale;
-      v = v === Infinity ? d : smin(v, d, k);
+      // hard union within a chain (no bulges at the joints), smooth between branches
+      if (C[n] === cur) {
+        if (d < cm) cm = d;
+      } else {
+        if (cur >= 0) v = v === Infinity ? cm : smin(v, cm, k);
+        cur = C[n];
+        cm = d;
+      }
     }
+    if (cur >= 0) v = v === Infinity ? cm : smin(v, cm, k);
     return Math.min(v, this.clampTo);
   }
 }
@@ -492,6 +579,7 @@ function treeCapsules(foot: TNode, caps: Capsules) {
       const p2 = sub(b, scl(outDir(n), L / 3));
       const steps = Math.max(3, Math.min(16, Math.ceil(L / Math.max(2, k.r * 1.5))));
       let prev = a;
+      caps.newChain();
       for (let s = 1; s <= steps; s++) {
         const t = s / steps;
         const u = 1 - t;
@@ -620,7 +708,8 @@ export function buildStand(M: ManifoldToplevel, body: Body, o: StandOptions): St
     ]);
   };
   const off = cOut - t / 2;
-  interface Contact { p: V3; n: V3; pad: number }
+  /** A strut target; `pad` > 0 adds a contact pad (a band towards `to` when set). */
+  interface Contact { p: V3; n: V3; pad: number; to?: V3 }
   const back: Contact[] = [];
   const padR = Math.max(2 * r + 3, Math.min(16, 0.16 * Math.min(Math.max(W, 30), H)));
   const backContact = (x: number, z: number, pad: number) => {
@@ -633,14 +722,23 @@ export function buildStand(M: ManifoldToplevel, body: Body, o: StandOptions): St
     return true;
   };
   const zSup = Math.min(H - padR, Math.max(lip + padR, o.support * H));
-  const padXs = W > 90 ? [-0.3 * W, 0.3 * W] : [0];
-  for (const x of padXs) if (!backContact(x, zSup, padR) && !backContact(0, zSup, padR)) backContact(0, H / 2, padR);
+  // the back rest: a band across the back between two struts (or one pad on narrow objects)
+  const restR = 0.55 * padR;
+  const xr = 0.3 * W;
+  let rest = 0;
+  if (W >= 30 && backContact(-xr, zSup, restR) && backContact(xr, zSup, restR)) {
+    back[0].to = back[1].p;
+    rest = 2;
+  } else {
+    back.length = 0;
+    if (backContact(0, zSup, padR) || backContact(0, H / 2, padR)) rest = 1;
+  }
   if (!back.length) throw new UserError('Kan de achterkant van het voorwerp niet vinden. Draai het model zodat de voorkant naar voren (−Y) wijst.');
   // extra branches: random small contacts on the back between lip and support
   for (let i = 0; i < o.branches; i++) {
     const x = (hash3(i, 1, 0, o.seed) - 0.5) * 0.84 * W;
     const z = lip + padR * 0.6 + hash3(i, 2, 0, o.seed) * Math.max(1, zSup + padR * 0.5 - lip - padR * 0.6);
-    backContact(x, z, padR * 0.6);
+    backContact(x, z, Math.max(1.6 * r, 0.35 * padR));
   }
   // the cradle: anchors under the bottom and behind it
   const slotHalf = o.cable ? o.cableWidth / 2 : 0;
@@ -667,7 +765,7 @@ export function buildStand(M: ManifoldToplevel, body: Body, o: StandOptions): St
   for (const x of [bb.min[0], bb.max[0]])
     for (const z of [-cOut, lip])
       for (const y of [bb.min[1] - cOut]) yFront = Math.min(yFront, toWorld([x, y, z])[1]);
-  const rFoot = 1.7 * Math.min(2 * r, r * 1.6);
+  const rFoot = 1.4 * r * 1.6;
   const margin = Math.max(6, 0.06 * H);
   yFront = Math.min(yFront + r, objCom[1] - margin - rFoot);
   const maxBackY = Math.max(...wBack.map((p) => p[1]));
@@ -709,11 +807,19 @@ export function buildStand(M: ManifoldToplevel, body: Body, o: StandOptions): St
     footR = Math.max(footR, tree.r);
     treeCapsules(tree, core);
   }
-  const rf = 1.7 * footR;
-  for (const f of Object.values(feet)) core.add([f[0], f[1], 0.35 * rf], [f[0], f[1], 0.35 * rf], rf, rf);
+  // the lattice envelope follows the branches only (not the feet and ground bars)
+  const branchesOnly = core.clone();
+  const rf = 1.4 * footR;
+  for (const f of Object.values(feet)) {
+    core.newChain();
+    core.add([f[0], f[1], 0.15 * rf], [f[0], f[1], 0.15 * rf], rf, rf);
+  }
   // ground bars tie the feet together (none across the front when a cable must pass)
   const rb = Math.max(r * 0.9, 1.6);
-  const bar = (a: V3, b: V3) => core.add([a[0], a[1], 0.4 * rb], [b[0], b[1], 0.4 * rb], rb, rb);
+  const bar = (a: V3, b: V3) => {
+    core.newChain();
+    core.add([a[0], a[1], 0.4 * rb], [b[0], b[1], 0.4 * rb], rb, rb);
+  };
   bar(feet.fl, feet.bl);
   bar(feet.fr, feet.br);
   bar(feet.bl, feet.br);
@@ -724,7 +830,7 @@ export function buildStand(M: ManifoldToplevel, body: Body, o: StandOptions): St
   const envScale = 2.4;
   const pat = lattice ? volumePattern({ kind: o.style as 'voronoi' | 'blobs' | 'gyroid', cell: o.cell, strut: Math.max(MIN_FEATURE * 1.5, r * 0.9), smooth: o.smooth, porosity: 0.5, seed: o.seed }) : null;
   const pads = back.filter((b) => b.pad > 0);
-  const mainPads = back.filter((b) => b.pad === padR).length;
+
   const cIn = c + 0.1 * hb;
   const slotY0 = bb.min[1] - cOut - 3;
   const slotY1 = bb.max[1] + cOut + 3;
@@ -733,7 +839,13 @@ export function buildStand(M: ManifoldToplevel, body: Body, o: StandOptions): St
   const corners: V3[] = [];
   for (const x of [bb.min[0] - cOut, bb.max[0] + cOut])
     for (const y of [bb.min[1] - cOut, bb.max[1] + cOut]) for (const z of [bb.min[2] - cOut, lip + 1]) corners.push(toWorld([x, y, z]));
-  for (const p of pads) for (const s of [-1, 1]) for (const q of [0, 1, 2]) corners.push(toWorld(add(p.p, [q === 0 ? s * (p.pad + cOut) : 0, q === 1 ? s * (p.pad + cOut) : 0, q === 2 ? s * (p.pad + cOut) : 0])));
+  for (const p of pads)
+    for (const s of [-1, 1])
+      for (const q of [0, 1, 2]) {
+        const dv: V3 = [q === 0 ? s * (p.pad + cOut) : 0, q === 1 ? s * (p.pad + cOut) : 0, q === 2 ? s * (p.pad + cOut) : 0];
+        corners.push(toWorld(add(p.p, dv)));
+        if (p.to) corners.push(toWorld(add(p.to, dv)));
+      }
   const bnd: Box3 = { min: [...boundsCore.min], max: [...boundsCore.max] };
   for (const p of corners)
     for (let q = 0; q < 3; q++) {
@@ -749,7 +861,7 @@ export function buildStand(M: ManifoldToplevel, body: Body, o: StandOptions): St
   bnd.max[2] += 2 * edge;
   core.index(1, k, 2 * edge + 1);
   // the same branches, fattened into a lattice envelope
-  const env = lattice ? core.clone() : null;
+  const env = lattice ? branchesOnly : null;
   env?.index(envScale, k * 2, 2 * edge + 1);
   const kEdge = o.smooth * t * 0.45;
   const far = 1.5 * hb + k;
@@ -764,7 +876,7 @@ export function buildStand(M: ManifoldToplevel, body: Body, o: StandOptions): St
     if (shell < far) {
       let hold = smax(shell, zo - lip, kEdge);
       for (const p of pads) {
-        const dp = Math.hypot(x - p.p[0], yo - p.p[1], zo - p.p[2]) - p.pad;
+        const dp = p.to ? segDist(x, yo, zo, p.p, p.to) - p.pad : Math.hypot(x - p.p[0], yo - p.p[1], zo - p.p[2]) - p.pad;
         hold = smin(hold, Math.max(shell, dp), k);
       }
       v = smin(v, hold, k);
@@ -799,9 +911,17 @@ export function buildStand(M: ManifoldToplevel, body: Body, o: StandOptions): St
   const info: [string, string][] = [
     ['Hoek', `${o.angle}° met de tafel`],
     ['Stabiliteit', `zwaartepunt ${marginReal.toFixed(0)} mm binnen het steunvlak (aanname: voorwerp ${OBJECT_DENSITY} g/cm³)`],
-    ['Steunpunten', `${mainPads} steun(en) in de rug, ${pads.length - mainPads} extra takken, ${cradle.length + back.length - pads.length} aan de onderrand`],
+    ['Steunpunten', `${rest === 2 ? 'rugsteun over de breedte' : 'één rugsteun'}, ${pads.length - rest} extra takken, ${cradle.length + back.length - pads.length} aan de onderrand`],
   ];
   return { parts: [{ name: 'Standaard', solid, print: rotX(0) }], edge, warnings, tips, info, bodyMatrix, margin: marginReal, centerOfMass: com };
+}
+
+function segDist(x: number, y: number, z: number, a: V3, b: V3) {
+  const bx = b[0] - a[0], by = b[1] - a[1], bz = b[2] - a[2];
+  const px = x - a[0], py = y - a[1], pz = z - a[2];
+  const bb = bx * bx + by * by + bz * bz;
+  const t = bb > 1e-12 ? Math.min(1, Math.max(0, (px * bx + py * by + pz * bz) / bb)) : 0;
+  return Math.hypot(px - bx * t, py - by * t, pz - bz * t);
 }
 
 /** Centre of volume of a closed solid (divergence theorem). */

@@ -117,6 +117,88 @@ export function voronoi(x: number, y: number, z: number, s: number, seed: number
   return out;
 }
 
+/**
+ * Voronoi seeds at explicit positions (e.g. spread over a curved surface), in
+ * a spatial hash of cell size s. Gives even hole sizes on shells, unlike a
+ * 3D grid of seeds that the surface cuts at random depths.
+ */
+export class SeedSet {
+  private cells = new Map<number, number[]>();
+  readonly count: number;
+
+  constructor(
+    private pts: Float64Array,
+    private rand: Float64Array,
+    private s: number,
+  ) {
+    this.count = pts.length / 3;
+    for (let n = 0; n < this.count; n++) {
+      const key = this.key(Math.floor(pts[n * 3] / s), Math.floor(pts[n * 3 + 1] / s), Math.floor(pts[n * 3 + 2] / s));
+      let arr = this.cells.get(key);
+      if (!arr) this.cells.set(key, (arr = []));
+      arr.push(n);
+    }
+  }
+
+  private key(i: number, j: number, k: number) {
+    return ((i + 4096) * 8192 + (j + 4096)) * 8192 + (k + 4096);
+  }
+
+  /** Seeds in the 3×3×3 hash cells around a point. */
+  private near(x: number, y: number, z: number, out: number[]) {
+    out.length = 0;
+    const ci = Math.floor(x / this.s), cj = Math.floor(y / this.s), ck = Math.floor(z / this.s);
+    for (let i = ci - 1; i <= ci + 1; i++)
+      for (let j = cj - 1; j <= cj + 1; j++)
+        for (let k = ck - 1; k <= ck + 1; k++) {
+          const arr = this.cells.get(this.key(i, j, k));
+          if (arr) for (const n of arr) out.push(n);
+        }
+    return out;
+  }
+
+  private scratch: number[] = [];
+
+  walls(x: number, y: number, z: number, out: VoronoiHit): VoronoiHit {
+    const cand = this.near(x, y, z, this.scratch);
+    const P = this.pts;
+    let best = Infinity;
+    let bi = -1;
+    for (const n of cand) {
+      const d = (P[n * 3] - x) ** 2 + (P[n * 3 + 1] - y) ** 2 + (P[n * 3 + 2] - z) ** 2;
+      if (d < best) {
+        best = d;
+        bi = n;
+      }
+    }
+    out.e1 = out.e2 = out.e3 = this.s;
+    out.cell = bi >= 0 ? this.rand[bi] : 0;
+    if (bi < 0) return out;
+    let e1 = Infinity, e2 = Infinity, e3 = Infinity;
+    const ax = P[bi * 3], ay = P[bi * 3 + 1], az = P[bi * 3 + 2];
+    for (const n of cand) {
+      if (n === bi) continue;
+      const dx = P[n * 3] - ax, dy = P[n * 3 + 1] - ay, dz = P[n * 3 + 2] - az;
+      const l = Math.sqrt(dx * dx + dy * dy + dz * dz);
+      if (l < 1e-9) continue;
+      const dn = (P[n * 3] - x) ** 2 + (P[n * 3 + 1] - y) ** 2 + (P[n * 3 + 2] - z) ** 2;
+      const e = (dn - best) / (2 * l);
+      if (e < e1) {
+        e3 = e2;
+        e2 = e1;
+        e1 = e;
+      } else if (e < e2) {
+        e3 = e2;
+        e2 = e;
+      } else if (e < e3) e3 = e;
+    }
+    out.e1 = Math.min(e1, this.s);
+    out.e2 = Math.min(e2, this.s);
+    out.e3 = Math.min(e3, this.s);
+    return out;
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Pattern definitions
 
@@ -139,10 +221,11 @@ export interface PatternOptions {
  * A perforation pattern for thin shells: walls between holes (negative =
  * material). Used for covers, cages and perforated skins.
  */
-export function surfacePattern(o: PatternOptions): (x: number, y: number, z: number) => number {
+export function surfacePattern(o: PatternOptions, seeds?: SeedSet): (x: number, y: number, z: number) => number {
   const s = o.cell;
   const half = o.strut / 2;
   const hit: VoronoiHit = { e1: 0, e2: 0, e3: 0, cell: 0 };
+  const cells = (x: number, y: number, z: number, jitter: number) => (seeds ? seeds.walls(x, y, z, hit) : voronoi(x, y, z, s, o.seed, hit, jitter));
   if (o.kind === 'gyroid') {
     const w = (2 * Math.PI) / s;
     // |∇g| is about 1.2·w on the surface: scale to mm
@@ -158,23 +241,23 @@ export function surfacePattern(o: PatternOptions): (x: number, y: number, z: num
     // warped Voronoi: rounded, irregular holes with a guaranteed web width; some cells stay closed
     const amp = 0.28 * s;
     const f = 1.3 / s;
-    const k = Math.max(0.05, o.smooth) * 0.6 * s;
-    const open = 0.35 + 0.65 * o.porosity;
+    const k = Math.max(0.05, o.smooth) * 0.35 * s;
+    const open = 0.7 + 0.3 * o.porosity;
     return (x, y, z) => {
       const qx = x + amp * noise3(x * f, y * f, z * f, o.seed + 11);
       const qy = y + amp * noise3(x * f + 31.7, y * f, z * f, o.seed + 12);
       const qz = z + amp * noise3(x * f, y * f + 17.3, z * f, o.seed + 13);
-      voronoi(qx, qy, qz, s, o.seed, hit, 1);
+      cells(qx, qy, qz, 1);
       if (hit.cell > open) return -half;
       const e = smin(hit.e1, hit.e2, k);
       // smaller holes in some cells
-      const extra = (1 - o.porosity) * 0.22 * s * hash3(Math.floor(hit.cell * 1e6), 0, 0, o.seed, 9);
+      const extra = (1 - o.porosity) * 0.18 * s * hash3(Math.floor(hit.cell * 1e6), 0, 0, o.seed, 9);
       return e - half - extra;
     };
   }
   const k = o.smooth * 0.35 * s;
   return (x, y, z) => {
-    voronoi(x, y, z, s, o.seed, hit);
+    cells(x, y, z, 0.85);
     return smin(hit.e1, hit.e2, k) - half;
   };
 }
