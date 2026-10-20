@@ -634,3 +634,169 @@ export function legTips(leg: Leg): string[] {
   if (leg.spec.profile === 'scandi') tips.push('Mooi detail: schilder de "sok" onderaan in messing- of goudkleur.');
   return tips;
 }
+
+// ---------------------------------------------------------------------------
+// Ring stand: a cylindrical skirt under a round board, split into arc segments
+// with vertical dovetails when it does not fit the bed in one piece.
+
+export interface RingSpec {
+  /** Outer radius of the skirt. */
+  radius: number;
+  /** Floor to the wood. */
+  height: number;
+  wall: number;
+  /** 'none' | 'diamonds' | 'slots' */
+  pattern: string;
+  /** Usable bed size. */
+  bed: { x: number; y: number };
+}
+
+export interface Ring {
+  /** One segment in print orientation: flange (wood side) at z = 0, centred on angle 0 around the Z axis. */
+  solid: Manifold;
+  segments: number;
+  /** Angle of one segment, degrees. */
+  angle: number;
+  holesPerSegment: number;
+  /** Bounding box of a segment on the bed. */
+  size: [number, number];
+  warnings: string[];
+}
+
+const RING_FLANGE = { w: 13, t: 4 };
+const DOVE = { root: 5, tip: 7.5, len: 6, clear: 0.25 };
+
+/** Bounding box of an annulus sector of half-angle `h` (radians), centred on +X. */
+function sectorBox(ro: number, ri: number, h: number): [number, number] {
+  if (h >= Math.PI - 1e-9) return [2 * ro, 2 * ro];
+  const ys = Math.min(h, Math.PI / 2);
+  const wy = 2 * ro * Math.sin(ys);
+  const maxX = ro;
+  const minX = h > Math.PI / 2 ? ro * Math.cos(h) : ri * Math.cos(h);
+  return [maxX - minX, wy];
+}
+
+export function buildRing(M: ManifoldToplevel, spec: RingSpec, minSegments = 1): Ring {
+  const warnings: string[] = [];
+  const Ro = spec.radius;
+  const H = spec.height;
+  const w = spec.wall;
+  const Ri = Ro - w;
+  const Rf = Ri - RING_FLANGE.w;
+  if (Rf < 15) throw new UserError('Het plankje is te klein voor een ring: kies poten of een groter plankje.');
+  if (H < RING_FLANGE.t + 8) throw new UserError(`Een ring moet minstens ${RING_FLANGE.t + 8} mm hoog zijn: maak de verhoging hoger.`);
+  const postT = 8;
+  const postLen = DOVE.len + 7;
+  // fewest segments whose bounding box fits the bed (either way round)
+  const fits = (sz: [number, number]) => (sz[0] <= spec.bed.x && sz[1] <= spec.bed.y) || (sz[1] <= spec.bed.x && sz[0] <= spec.bed.y);
+  let n = Math.max(1, minSegments);
+  let size: [number, number] = [2 * Ro, 2 * Ro];
+  for (; n <= 64; n++) {
+    if (n === 1) {
+      size = [2 * Ro, 2 * Ro];
+    } else {
+      const h = Math.PI / n;
+      const b = sectorBox(Ro, Rf, h);
+      // the tongue sticks out past one end
+      size = [b[0] + 2, b[1] + DOVE.len + 2];
+    }
+    if (fits(size)) break;
+  }
+  if (n > 64) throw new UserError('De ring is te groot om in stukken te printen.');
+  const ang = TAU / n;
+  const segPts = (r0: number, r1: number, a0: number, a1: number): Vec2[] => {
+    const k = Math.max(8, Math.ceil(((a1 - a0) * r1) / 2));
+    const pts: Vec2[] = [];
+    for (let i = 0; i <= k; i++) {
+      const a = a0 + ((a1 - a0) * i) / k;
+      pts.push([r1 * Math.cos(a), r1 * Math.sin(a)]);
+    }
+    for (let i = k; i >= 0; i--) {
+      const a = a0 + ((a1 - a0) * i) / k;
+      pts.push([r0 * Math.cos(a), r0 * Math.sin(a)]);
+    }
+    return pts;
+  };
+  const annulus = (r0: number, r1: number, a0: number, a1: number) => {
+    if (n === 1) return M.CrossSection.circle(r1, 256).subtract(M.CrossSection.circle(r0, 256));
+    return keep(new M.CrossSection([segPts(r0, r1, a0, a1)], 'Positive'));
+  };
+  const h = ang / 2;
+  const wallCs = annulus(Ri, Ro, -h, h);
+  const flangeCs = annulus(Rf, Ro - 0.01, -h, h);
+  const pieces: Manifold[] = [wallCs.extrude(H), filletExtrude(M, flangeCs, RING_FLANGE.t, 0.4, 0)];
+  const cutters: Manifold[] = [];
+  let tongue: Manifold | null = null;
+  if (n > 1) {
+    // posts at both ends hold the dovetail
+    const pa = postLen / Ri;
+    pieces.push(annulus(Ri - postT, Ri + 0.01, h - pa, h).extrude(H));
+    pieces.push(annulus(Ri - postT, Ri + 0.01, -h, -h + pa).extrude(H));
+    const rc = Ro - (w + postT) / 2;
+    const dove = (e: number, grow: number) => {
+      const pts: Vec2[] = [
+        [rc - DOVE.root / 2 - grow, -0.5],
+        [rc + DOVE.root / 2 + grow, -0.5],
+        [rc + DOVE.tip / 2 + grow, DOVE.len + grow],
+        [rc - DOVE.tip / 2 - grow, DOVE.len + grow],
+      ];
+      return keep(new M.CrossSection([pts], 'Positive')).rotate((e * 180) / Math.PI);
+    };
+    tongue = dove(h, 0).extrude(H);
+    cutters.push(dove(-h, DOVE.clear).extrude(H + 2).translate([0, 0, -1]));
+  }
+  // decorative windows in the wall (pointed both ends so they print without support)
+  const zone0 = RING_FLANGE.t + 5;
+  const zone1 = H - 5;
+  if (spec.pattern !== 'none' && zone1 - zone0 >= 12) {
+    const hd = zone1 - zone0;
+    const wd = spec.pattern === 'slots' ? clamp(hd * 0.2, 4, 9) : clamp(hd / 1.6, 6, 26);
+    const pitch = wd * (spec.pattern === 'slots' ? 2.2 : 1.7);
+    const free = n > 1 ? ang * Ro - 2 * (postLen + 4) : TAU * Ro;
+    const count = Math.floor(free / pitch);
+    if (count >= 1) {
+      const shape: Vec2[] =
+        spec.pattern === 'slots'
+          ? [
+              [0, -hd / 2],
+              [wd / 2, -hd / 2 + wd / 2],
+              [wd / 2, hd / 2 - wd / 2],
+              [0, hd / 2],
+              [-wd / 2, hd / 2 - wd / 2],
+              [-wd / 2, -hd / 2 + wd / 2],
+            ]
+          : [
+              [0, -hd / 2],
+              [wd / 2, 0],
+              [0, hd / 2],
+              [-wd / 2, 0],
+            ];
+      const prism = keep(new M.CrossSection([shape], 'Positive')).extrude(w + 2).translate([0, 0, -1]);
+      // prism: x = tangent, y = height, z = radial → place at the wall
+      const base = prism.transform(asMat4(mul(translation(Ri, 0, (zone0 + zone1) / 2), [0, 1, 0, 0, 0, 0, 1, 0, 1, 0, 0, 0, 0, 0, 0, 1])));
+      const step = n > 1 ? (free / count) / Ro : TAU / count;
+      const start = n > 1 ? -((count - 1) * step) / 2 : 0;
+      const wins: Manifold[] = [];
+      for (let i = 0; i < count; i++) wins.push(base.rotate([0, 0, ((start + i * step) * 180) / Math.PI]));
+      cutters.push(M.Manifold.union(wins));
+    }
+  }
+  // countersunk holes in the flange, clear of the posts
+  const hr = (Rf + Ri) / 2;
+  const holeSpan = n > 1 ? ang - 2 * ((postLen + 8) / hr) : TAU;
+  const holes = Math.max(2, Math.round((holeSpan * hr) / 110) + (n > 1 ? 1 : 0));
+  const holeAngles: number[] = [];
+  if (n > 1) for (let i = 0; i < holes; i++) holeAngles.push(-holeSpan / 2 + (holeSpan * i) / (holes - 1));
+  else for (let i = 0; i < Math.max(3, holes); i++) holeAngles.push((TAU * i) / Math.max(3, holes));
+  for (const a of holeAngles) cutters.push(countersunk(M, SCREW.shaft, SCREW.head, RING_FLANGE.t).rotate([180, 0, 0]).translate([hr * Math.cos(a), hr * Math.sin(a), RING_FLANGE.t]));
+  let solid = M.Manifold.union(tongue ? [...pieces, tongue] : pieces);
+  if (cutters.length) solid = solid.subtract(M.Manifold.union(cutters));
+  const b = solid.boundingBox();
+  size = [b.max[0] - b.min[0], b.max[1] - b.min[1]];
+  if (!fits(size)) {
+    // the estimate was a little optimistic: one more segment
+    if (n < 64) return buildRing(M, spec, n + 1);
+    warnings.push('Een ringsegment is net te groot voor het bed.');
+  }
+  return { solid, segments: n, angle: (ang * 180) / Math.PI, holesPerSegment: holeAngles.length, size, warnings };
+}
