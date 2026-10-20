@@ -785,6 +785,9 @@ function buildDialModes(ctx: Ctx, withHands: boolean): BuildOutput {
     tips.push('De uurwijzer moet vrij over de verhoogde cijfers draaien. Zit hij te dicht op de plaat, maak dan het reliëf lager of gebruik de uitsparing aan de achterkant: dan komt de plaat verder naar achteren.');
   }
   tips.push('Ophangen: het uurwerk heeft meestal een ophangoogje aan de achterkant; de plaat hangt eraan vast via de moer op de as.');
+  if (!withHands) {
+    tips.push('Nieuwe plaat in een bestaande klokkast? Meet de binnenmaat van de kast, maak de plaat 1 mm kleiner en houd het reliëf laag, zodat de wijzers onder het glas blijven draaien.');
+  }
 
   // assembled view
   const lift = geo.R + 20;
@@ -1167,6 +1170,7 @@ function build(p: Params, { M, assets, printer }: Parameters<ToolDef['build']>[1
       'Wijzers: print plat met 0,12–0,16 mm lagen en 100% infill; geen brim. PLA is stijf en licht genoeg.',
       'Monteren: uurwerk achter de plaat, ringetje en zeskantmoer voor. Druk de uurwijzer op 12 uur op de buis, dan de minutenwijzer ook op 12 uur, draai het dopmoertje erop en druk als laatste de secondewijzer op het pinnetje.',
     );
+    if (bool(p, 'seconds')) ctx.tips.push('Het gaatje van de secondewijzer is heel klein. Te krap? Ruim het voorzichtig op met een naald of een boortje van 1 mm; te ruim? Een druppel lijm op het pinnetje helpt.');
   }
   if (m !== 'hands' && m !== 'fit') ctx.tips.push('Wijzerplaat: PLA, 0,2 mm lagen, 3 wanden en 15% infill is genoeg.');
   if (m === 'clock' || m === 'hands') {
@@ -1433,19 +1437,20 @@ export const clockTool: ToolDef = {
     },
   ],
   randomize: () => {
-    const shape = pick(['circle', 'circle', 'squircle', 'polygon', 'petals', 'flower', 'scallop', 'cloud', 'blob', 'gear', 'clover']);
+    const shape = pick(['circle', 'circle', 'squircle', 'polygon', 'petals', 'flower', 'scallop', 'cloud', 'blob', 'gear', 'clover', 'cross', 'drop']);
     const numerals = pick(['arabic', 'arabic', 'roman', 'quarters', 'quartersRoman', 'none']);
     return {
       dialShape: shape,
-      dialCount: shape === 'polygon' ? pick([6, 8, 12]) : shape === 'blob' || shape === 'cloud' ? rnd(3, 7) : pick([6, 8, 12, 12, 24]),
+      dialCount: shape === 'polygon' ? pick([6, 8, 12]) : shape === 'blob' || shape === 'cloud' ? rnd(3, 7) : shape === 'cross' || shape === 'clover' ? pick([3, 4, 4, 6]) : pick([6, 8, 12, 12, 24]),
       dialDepth: rnd(8, 30),
       dialRounding: rnd(20, 90),
       dialSeed: rnd(1, 999),
       font: pick(FONT_OPTIONS).value,
       numerals,
-      numOrient: pick(['upright', 'upright', 'radial']),
-      numSize: rnd(7, 13, 0.5),
-      numPos: rnd(70, 80),
+      numOrient: pick(['upright', 'upright', 'radial', 'readable']),
+      numWidth: pick([100, 100, 85, 70]),
+      numSize: rnd(7, 11, 0.5),
+      numPos: rnd(64, 74),
       hourTicks: pick(['line', 'dot', 'triangle', 'diamond', 'none']),
       minuteTicks: pick(['none', 'line', 'dot']),
       track: Math.random() < 0.25,
