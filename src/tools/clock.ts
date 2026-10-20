@@ -1396,6 +1396,20 @@ export const clockTool: ToolDef = {
       },
     },
     {
+      name: 'Designy kruis met stippen',
+      values: {
+        mode: 'clock', diameter: 240, dialShape: 'cross', dialCount: 4, dialDepth: 25, dialRounding: 100, numerals: 'none', hourTicks: 'dot', hourTickL: 9,
+        minuteTicks: 'none', tickPos: 92, handStyle: 'lolly', handW: 7, secStyle: 'lolly', edge: 1.6,
+      },
+    },
+    {
+      name: 'Klaverblad zonder cijfers',
+      values: {
+        mode: 'clock', diameter: 240, dialShape: 'clover', dialCount: 3, dialDepth: 40, numerals: 'none', hourTicks: 'diamond', hourTickL: 10,
+        minuteTicks: 'none', handStyle: 'breguet', secStyle: 'ring',
+      },
+    },
+    {
       name: 'Art deco (gegraveerd)',
       values: {
         mode: 'clock', diameter: 240, dialShape: 'polygon', dialCount: 8, dialRounding: 25, font: 'bundled:righteous', numerals: 'arabic', numSize: 10, numPos: 74,

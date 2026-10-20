@@ -260,6 +260,33 @@ describe('klok: eigen vormen en lettertypes', () => {
     expect(a({ mode: 'dial', handStyle: 'custom', handFile: 'upload:x' })).toEqual([{ kind: 'font', key: 'bundled:montserrat' }]);
   });
 
+  it('tekens die het lettertype mist worden weggelaten met een melding', async () => {
+    const res = await build({ mode: 'dial', numerals: 'custom', customLabels: '★,2,3,4,5,6,7,8,9,10,11,12' });
+    expect(res.warnings.join(' ')).toContain('★');
+    expect(part(res, 'Wijzerplaat').volume).toBeGreaterThan(0);
+  });
+
+  it('dezelfde label meer keer is één onderdeel met een aantal', async () => {
+    const res = await build({ mode: 'wall', numerals: 'custom', customLabels: '12,·,·,3,·,·,6,·,·,9,·,·', hourTicks: 'none' });
+    const dot = part(res, 'Cijfer ·');
+    expect(dot.quantity).toBe(8);
+    expect(res.parts.filter((p) => p.name === 'Cijfer ·').length).toBe(1);
+    expect(res.scene!.filter((s) => s.kind === 'part' && res.parts[s.part].name === 'Cijfer ·').length).toBe(8);
+  });
+
+  it('smallere cijfers en leesbare stand onderaan', async () => {
+    const wide = await build({ mode: 'wall', numerals: 'quarters', hourTicks: 'none', wallBacking: 'none', numOrient: 'radial' });
+    const narrow = await build({ mode: 'wall', numerals: 'quarters', hourTicks: 'none', wallBacking: 'none', numWidth: 60, numOrient: 'readable' });
+    expect(part(narrow, 'Cijfer 12').size[0]).toBeCloseTo(part(wide, 'Cijfer 12').size[0] * 0.6, 0);
+    // the 6 stands on its head when radial, upright when readable (cos of its rotation in the matrix)
+    const rot = (res: BuildResult) => {
+      const i = res.parts.findIndex((p) => p.name === 'Cijfer 6');
+      return (res.scene!.find((s) => s.kind === 'part' && s.part === i) as { matrix: number[] }).matrix[0];
+    };
+    expect(rot(wide)).toBeCloseTo(-1, 5);
+    expect(rot(narrow)).toBeCloseTo(1, 5);
+  });
+
   it('eigen labels: een ander aantal begint bovenaan', async () => {
     const res = await build({ mode: 'wall', numerals: 'custom', customLabels: 'N,O,Z,W', hourTicks: 'none' });
     const table = res.info.find((b) => b.kind === 'table' && b.title.startsWith('Plaats'));
