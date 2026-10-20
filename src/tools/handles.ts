@@ -1,11 +1,11 @@
 import type { CrossSection, Manifold, ManifoldToplevel, Vec2, Vec3 } from 'manifold-3d';
-import type { AssetRef, AssetStore, BuildOutput, Params, ToolDef } from '../core/types';
+import type { AssetRef, AssetStore, BuildOutput, Params, PartOut, SceneItem, ToolDef } from '../core/types';
 import { num, str } from '../core/types';
 import { keep } from '../core/registry';
-import { SCREWS, clamp, countersunk, filletExtrude, fixingHole, lerp, roundedRect, smoothstep } from '../geom/helpers';
-import { sectionFn } from '../geom/surface';
-import { effectiveSpec, shapeCross, type ShapeSpec } from '../geom/shapes2d';
-import { cushion, edgeRings, focusRings, gridSolid, polarGrid, radiiOf, rise, type PolarGrid } from '../geom/pillow';
+import { SCREWS, TAU, asMat4, clamp, countersunk, filletExtrude, fixingHole, hexagon, lerp, roundedRect, rotZ, smoothstep, teardrop, translation } from '../geom/helpers';
+import { noise3, sectionFn, solidOfSurface } from '../geom/surface';
+import { effectiveSpec, radialShape, shapeCross, type ShapeSpec } from '../geom/shapes2d';
+import { cushion, edgeRings, focusRings, gridSolid, polarGrid, radiiOf, rise, tubeSolid, type PolarGrid } from '../geom/pillow';
 
 const SPACINGS = [64, 96, 128, 160, 192, 224, 256, 320];
 
@@ -415,13 +415,14 @@ function designKnob(M: ManifoldToplevel, p: Params, assets?: AssetStore) {
     const tq = b * Math.tan(Math.PI / 8);
     const zTop = zApex + b * (1 - Math.SQRT1_2);
     const zFlat = zTop + 1;
-    for (const lay of layers) {
+    layers.forEach((lay, i) => {
       const lg = lay.g;
-      // each layer gets its own 45° cone so overhanging petals are carried too
+      // each layer gets its own 45° cone so overhanging petals are carried too; the cone runs on
+      // inside the stem (no kink near the neck, so no seam), down to just above the door face
       const apex = Math.max(zApex, lay.z0 - (lg.rMax - rn));
-      const flatL = apex + (zFlat - zApex);
-      pieces.push(gridSolid(M, lg, (k) => lay.z0 + lay.top(k), (k) => Math.min(lay.z0, Math.max(flatL, apex + lg.rho[k] - rn))));
-    }
+      const low = i === 0 ? 0.5 : zFlat;
+      pieces.push(gridSolid(M, lg, (k) => lay.z0 + lay.top(k), (k) => Math.min(lay.z0, Math.max(low, apex + lg.rho[k] - rn))));
+    });
     const neck = (z: number) => {
       if (z >= zTop) return rn + (z - zApex) - 0.15;
       if (z >= zApex - tq) return rn + b - Math.sqrt(Math.max(0, b * b - (z - (zApex - tq)) ** 2));
@@ -495,6 +496,205 @@ function bar(M: ManifoldToplevel, p: Params) {
   return { solid, tips };
 }
 
+// ---------------------------------------------------------------------------
+// Abstract bar handles
+
+/** Sections for the twisted bar, as shape-library specs (a mirror axis points at the door). */
+const TWIST_SECTIONS: Record<string, Partial<ShapeSpec>> = {
+  square: { shape: 'polygon', count: 4, rounding: 0.45 },
+  triangle: { shape: 'polygon', count: 3, rounding: 0.5 },
+  star: { shape: 'star', count: 5, depth: 0.32, rounding: 0.7 },
+  flower: { shape: 'flower', count: 6, depth: 0.22 },
+  cross: { shape: 'cross', count: 4, depth: 0.3, rounding: 1 },
+};
+
+/** Posts (with a small flare at the door) and their fixing holes, for bars printed upside down. */
+function postsWithHoles(M: ManifoldToplevel, p: Params, c: number, zc: number, pd: number) {
+  const posts: Manifold[] = [];
+  const holes: Manifold[] = [];
+  const holeDepth = Math.min(zc - 2, 16);
+  for (const x of [-c / 2, c / 2]) {
+    posts.push(M.Manifold.cylinder(zc, pd / 2, pd / 2, 48).translate([x, 0, 0]));
+    posts.push(M.Manifold.cylinder(3, pd / 2 + 2, pd / 2, 48).translate([x, 0, 0]));
+    holes.push(fixingHole(M, str(p, 'screw'), str(p, 'mount'), holeDepth).translate([x, 0, 0]));
+  }
+  return { posts, holes };
+}
+
+/** Wavy and bone bars: a swept tube on two posts, printed upside down on a flat strip. */
+function sweptBar(M: ManifoldToplevel, p: Params, style: string) {
+  const c = spacing(p);
+  const e = num(p, 'overhang');
+  const t = num(p, 'barD');
+  const r = t / 2;
+  const h = num(p, 'standoff');
+  const pd = num(p, 'postD');
+  const L = c + 2 * e;
+  const zc = h + r;
+  const tips: string[] = [];
+  const pieces: Manifold[] = [];
+  const segs = 48;
+  if (style === 'wavy') {
+    // whole or half waves between the holes, so both posts sit right under the bar
+    const k = Math.max(0.5, Math.round(num(p, 'waves') * 2) / 2);
+    const amp = Math.min(num(p, 'waveAmp'), (c / (4 * k)) * 0.9);
+    const half = L / 2 - r;
+    pieces.push(tubeSolid(M, {
+      path: (u) => {
+        const x = -half + u * 2 * half;
+        return [x, amp * Math.sin((TAU * k * (x + c / 2)) / c)];
+      },
+      z: zc, radius: () => r, rings: Math.round(clamp(L / 1.2, 60, 300)), segs, caps: 'round',
+    }));
+    if (amp < num(p, 'waveAmp') - 0.1) tips.push(`Golfhoogte beperkt tot ${amp.toFixed(1)} mm zodat de golven niet te scherp worden.`);
+  } else {
+    const len = L - 2 * r;
+    pieces.push(tubeSolid(M, { path: (u) => [-len / 2 + u * len, 0], z: zc, radius: () => r, rings: 2, segs, caps: 'round' }));
+    // two round knuckles at each end, centred on the bar axis
+    const sr = (r * num(p, 'boneSize')) / 100;
+    const dy = sr * 0.62;
+    for (const sx of [-1, 1])
+      for (const sy of [-1, 1]) pieces.push(M.Manifold.sphere(sr, 48).translate([sx * (L / 2 - sr), sy * dy, zc]));
+  }
+  const { posts, holes } = postsWithHoles(M, p, c, zc, pd);
+  let solid = M.Manifold.union([...pieces, ...posts]).subtract(M.Manifold.union(holes));
+  // a flat strip on the front to print on (the knuckles of the bone get a flat too)
+  const cut = Math.max(1.2, r * 0.2);
+  solid = solid.trimByPlane([0, 0, -1], -(zc + r - cut)).rotate([180, 0, 0]);
+  tips.unshift('Geprint op de voorkant (ondersteboven) op een smalle platte strook: de pootjes en schroefgaten staan recht omhoog.');
+  return { solid, tips };
+}
+
+/**
+ * Bars printed standing up (twists and organic shapes come out clean that way, without
+ * support), with two separate standoffs whose top hugs the bar. `bar` is in print
+ * position: its axis along +Z from 0 to L, the door side towards −Y. When the bar is
+ * point-symmetric around its centre both standoffs are the same part, turned half a turn.
+ */
+function uprightBar(M: ManifoldToplevel, p: Params, bar: Manifold, o: { L: number; R: number; rIn: number; symmetric: boolean }) {
+  const c = spacing(p);
+  const { L, R, rIn } = o;
+  const zc = num(p, 'standoff') + R;
+  const pd = num(p, 'postD');
+  const screw = str(p, 'screw');
+  const mount = str(p, 'mount');
+  const s = SCREWS[screw] ?? SCREWS.M4;
+  const tips: string[] = [];
+  const warnings: string[] = [];
+  // fixing holes from the back, teardrop/hex point up so they print without support
+  const holeEnd = rIn - 1.6;
+  const holes: Manifold[] = [];
+  const along = (cs: CrossSection, y0: number, y1: number, zp: number) => cs.extrude(y1 - y0).rotate([90, 0, 0]).translate([0, y1, zp]);
+  for (const zp of [L / 2 - c / 2, L / 2 + c / 2]) {
+    if (mount === 'nut') {
+      holes.push(along(hexagon(M, s.nutAF + 0.3), -R - 1, -rIn + s.nutH + 0.4, zp));
+      holes.push(along(teardrop(M, s.clear / 2, 24), -R - 1, holeEnd, zp));
+    } else if (mount === 'insert') {
+      holes.push(along(teardrop(M, s.insertD / 2, 32), -R - 1, Math.min(holeEnd, -rIn + s.insertL + 0.5), zp));
+      holes.push(along(teardrop(M, s.clear / 2, 24), -R - 1, holeEnd, zp));
+    } else holes.push(along(teardrop(M, s.pilot / 2, 24), -R - 1, holeEnd, zp));
+  }
+  bar = bar.subtract(M.Manifold.union(holes));
+  const grip = holeEnd + rIn;
+  if (grip < 7) warnings.push(`Het schroefgat in de staaf is maar ${grip.toFixed(1)} mm diep: maak de staaf dikker voor meer grip.`);
+  // bar in use position: print z → along the door (x), print y → away from the door (z)
+  const toUse = [0, 1, 0, 0, 0, 0, 1, 0, 1, 0, 0, 0, -L / 2, 0, zc, 1];
+  const barUse = bar.transform(asMat4(toUse));
+  // standoffs: post with a flare at the door, seat cut to the bar's back, clearance hole through
+  const seatTop = zc - rIn;
+  const standoff = (x: number) =>
+    M.Manifold.union([M.Manifold.cylinder(seatTop, pd / 2, pd / 2, 48), M.Manifold.cylinder(3, pd / 2 + 2, pd / 2, 48)])
+      .translate([x, 0, 0])
+      .subtract(barUse)
+      .subtract(M.Manifold.cylinder(seatTop + 2, s.clear / 2, s.clear / 2, 24).translate([x, 0, -1]));
+  const screwL = Math.ceil((seatTop + grip * 0.8) / 5) * 5;
+  tips.push('De staaf wordt rechtop geprint: zo komt de vorm strak uit en is er geen support nodig. Zet een rand (brim) van 8 mm aan en print hoge staven wat langzamer, dan blijft hij stevig staan.');
+  if (o.symmetric) tips.push('De twee afstandsbussen zijn gelijk: draai de tweede een halve slag, dan past hij precies onder de staaf.');
+  else tips.push('De afstandsbussen passen elk op hun eigen plek onder de staaf (links en rechts, gezien vanaf de voorkant).');
+  tips.push(`Schroef van binnenuit door de deur en de afstandsbus in de staaf: ${s.label} × (deurdikte + ${screwL}) mm.`);
+  if (L > 300) warnings.push(`De staaf is ${L.toFixed(0)} mm lang: rechtop is dat hoog voor de printer. Verklein de uitsteek of kies een kleinere gatafstand.`);
+  const extra: PartOut[] = o.symmetric
+    ? [{ name: 'Afstandsbus', solid: standoff(c / 2), quantity: 2 }]
+    : [
+        { name: 'Afstandsbus links', solid: standoff(-c / 2), quantity: 1 },
+        { name: 'Afstandsbus rechts', solid: standoff(c / 2), quantity: 1 },
+      ];
+  const scene: SceneItem[] = [
+    { kind: 'part', part: 0, matrix: toUse },
+    { kind: 'part', part: 1, matrix: o.symmetric ? rotZ(180) : translation(0, 0, 0) },
+    { kind: 'part', part: o.symmetric ? 1 : 2, matrix: translation(0, 0, 0) },
+  ];
+  return { solid: bar, tips, warnings, extra, scene };
+}
+
+/** Twisted bar with a square, triangle, star, flower or cross section; small 45° chamfers at the ends. */
+function twistedBar(M: ManifoldToplevel, p: Params) {
+  const c = spacing(p);
+  const e = num(p, 'overhang');
+  const R = num(p, 'barD') / 2;
+  const L = c + 2 * e;
+  const spec = { shape: 'polygon', count: 4, depth: 0.3, rounding: 0.4, seed: 1, m: 4, n1: 1, n2: 1, n3: 1, ...TWIST_SECTIONS[str(p, 'twistSection')] } as ShapeSpec;
+  const f = radialShape(spec);
+  // a mirror axis of the section points at the door, so the bar is point-symmetric around its centre
+  const sec = (th: number) => f(th - Math.PI / 2);
+  let fMin = 1;
+  for (let i = 0; i < 360; i++) fMin = Math.min(fMin, sec((TAU * i) / 360));
+  // 45° chamfers at the ends: the full section stays on the bed, so the tall bar stands steady
+  const taper = Math.min(1.2, 0.15 * R);
+  const twist = (num(p, 'barTwist') * Math.PI) / 180;
+  const S = {
+    phi: (z: number) => (twist * (z - L / 2)) / L,
+    r: (z: number, th: number) => {
+      const u = z < taper ? z / taper : z > L - taper ? (L - z) / taper : 1;
+      return R * sec(th) * (1 - (taper / R) * (1 - Math.min(1, u)));
+    },
+  };
+  const rings = Math.round(clamp(Math.max(L / 1.5, (Math.abs(twist) * 180) / Math.PI / 1.5), 60, 400));
+  const bar = solidOfSurface(M, S, 0, L, 160, rings, taper > 0 ? [taper, L - taper] : undefined);
+  return uprightBar(M, p, bar, { L, R, rIn: R * fMin, symmetric: true });
+}
+
+/** Organic branch: wanders a little, bulges and has knots; cut off square at both ends. */
+function branchBar(M: ManifoldToplevel, p: Params) {
+  const c = spacing(p);
+  const e = num(p, 'overhang');
+  const r0 = num(p, 'barD') / 2;
+  const L = c + 2 * e + 1.2;
+  const noise = noise3(num(p, 'branchSeed'));
+  const knots = num(p, 'branchKnots') / 100;
+  // sideways wander that passes through both posts
+  const a = L / 2 - c / 2;
+  const wander = (x: number) => 0.9 * r0 * noise(x / 45, 0.5, 1.7);
+  const w0 = wander(a);
+  const w1 = wander(a + c);
+  const path = (u: number): [number, number] => {
+    const x = u * L;
+    return [x, wander(x) - w0 - ((w1 - w0) * (x - a)) / c];
+  };
+  const radius = (u: number, phi: number) => {
+    const x = u * L;
+    const n = noise(Math.cos(phi) * 0.7 + 3.1, Math.sin(phi) * 0.7, x / 10);
+    const knot = Math.max(0, noise(x / 20 + 9.3, Math.cos(phi) * 0.6, Math.sin(phi) * 0.6 + 4.2) - 0.12) * 2.4;
+    return r0 * (1.04 + 0.1 * (0.5 - u) + 0.13 * n + knots * 0.4 * knot);
+  };
+  // in print position: the path along +Z, wandering in X, the front (φ = 90°) towards +Y
+  const toPrint = [0, 0, 1, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1];
+  let bar = tubeSolid(M, { path, z: 0, radius, rings: Math.round(clamp(L / 1.2, 60, 300)), segs: 64, caps: 'flat' }).transform(asMat4(toPrint));
+  // saw both ends square so the bar stands flat on the bed
+  bar = bar.trimByPlane([0, 0, 1], 0.6).trimByPlane([0, 0, -1], -(L - 0.6)).translate([0, 0, -0.6]);
+  let rIn = Infinity;
+  let R = 0;
+  for (const x of [a, a + c])
+    for (let j = 0; j < 72; j++) {
+      const rr = radius(x / L, (TAU * j) / 72);
+      rIn = Math.min(rIn, rr);
+      R = Math.max(R, rr);
+    }
+  const res = uprightBar(M, p, bar, { L: L - 1.2, R, rIn, symmetric: false });
+  res.tips.push('Elke variant geeft een andere tak. Mooi in hout-PLA.');
+  return res;
+}
+
 function arch(M: ManifoldToplevel, p: Params) {
   const c = spacing(p);
   const h = num(p, 'clearance');
@@ -516,6 +716,32 @@ function arch(M: ManifoldToplevel, p: Params) {
       center.push([c / 2 - r + r * Math.cos(a), zc - r + r * Math.sin(a)]);
     }
     center.push([c / 2, -1]);
+  } else if (shape === 'wave') {
+    // a flat arch whose grip rises in two soft crests; the finger room never gets smaller
+    const amp = num(p, 'archWave');
+    center = [];
+    for (let i = 0; i <= 96; i++) {
+      const a = Math.PI - (Math.PI * i) / 96;
+      const s = Math.sin(a);
+      const z = zc * Math.pow(Math.max(0, s), 0.5) + amp * s * s * Math.sin(2 * a) ** 2;
+      center.push([(c / 2) * Math.cos(a), z - (i === 0 || i === 96 ? 1 : 0)]);
+    }
+  } else if (shape === 'loop') {
+    // a flat arch with a curl on top, like a hand-written ℓ
+    const rl = Math.max(num(p, 'loopD') / 2, t / 2 + 5);
+    center = [];
+    const half = (from: number, to: number) => {
+      for (let i = 0; i <= 32; i++) {
+        const a = from + ((to - from) * i) / 32;
+        center.push([(c / 2) * Math.cos(a), zc * Math.pow(Math.max(0, Math.sin(a)), 0.55) - (a === Math.PI || a === 0 ? 1 : 0)]);
+      }
+    };
+    half(Math.PI, Math.PI / 2);
+    for (let i = 1; i < 72; i++) {
+      const a = -Math.PI / 2 + (TAU * i) / 72;
+      center.push([rl * Math.cos(a), zc + rl + rl * Math.sin(a)]);
+    }
+    half(Math.PI / 2, 0);
   } else {
     center = [];
     const k = shape === 'flat' ? 0.55 : 1;
@@ -538,7 +764,8 @@ function arch(M: ManifoldToplevel, p: Params) {
   }
   const footH = Math.max(4, t * 0.6);
   for (const x of [-c / 2, c / 2]) segments.push(roundedRect(M, footL, footH * 2, Math.min(2, footH)).translate([x, 0]));
-  let outline = M.CrossSection.union(segments).intersect(M.CrossSection.square([c + footL + 4 * t, zc + t + 2]).translate([-(c + footL + 4 * t) / 2, 0]));
+  const topZ = Math.max(...center.map((q) => q[1])) + t / 2 + 2;
+  let outline = M.CrossSection.union(segments).intersect(M.CrossSection.square([c + footL + 4 * t, topZ]).translate([-(c + footL + 4 * t) / 2, 0]));
   outline = outline.offset(-0.6, 'Round').offset(0.6, 'Round');
   let solid = filletExtrude(M, outline, w, num(p, 'edgeR'), num(p, 'edgeR'));
   // screw holes go from the door face (y = 0 in the 2D outline) into the feet
@@ -594,8 +821,23 @@ function cup(M: ManifoldToplevel, p: Params) {
 
 function build(p: Params, { M, assets }: Parameters<ToolDef['build']>[1]): BuildOutput {
   const type = str(p, 'type');
-  const res: { solid: Manifold; tips: string[]; warnings?: string[] } =
-    type === 'bar' ? bar(M, p) : type === 'arch' ? arch(M, p) : type === 'cup' ? cup(M, p) : isDesign(p) ? designKnob(M, p, assets) : knob(M, p);
+  const barStyle = str(p, 'barStyle');
+  const res: { solid: Manifold; tips: string[]; warnings?: string[]; extra?: PartOut[]; scene?: SceneItem[] } =
+    type === 'bar'
+      ? barStyle === 'twisted'
+        ? twistedBar(M, p)
+        : barStyle === 'branch'
+          ? branchBar(M, p)
+          : ['wavy', 'bone'].includes(barStyle)
+          ? sweptBar(M, p, barStyle)
+          : bar(M, p)
+      : type === 'arch'
+        ? arch(M, p)
+        : type === 'cup'
+          ? cup(M, p)
+          : isDesign(p)
+            ? designKnob(M, p, assets)
+            : knob(M, p);
   const tips = [...res.tips];
   const mount = str(p, 'mount');
   const s = SCREWS[str(p, 'screw')] ?? SCREWS.M4;
@@ -608,7 +850,10 @@ function build(p: Params, { M, assets }: Parameters<ToolDef['build']>[1]): Build
   const info: BuildOutput['info'] = [];
   if (type !== 'knob') info.push({ kind: 'kv', title: 'Maat', rows: [['Gatafstand (hart-op-hart)', `${spacing(p)} mm`]] });
   const names: Record<string, string> = { knob: 'Knop', bar: 'Staafgreep', arch: 'Beugelgreep', cup: 'Schelpgreep' };
-  return { parts: [{ name: names[type] ?? 'Greep', solid: res.solid, quantity: num(p, 'quantity') }], tips, info, warnings: res.warnings ?? [] };
+  const q = num(p, 'quantity');
+  const parts: PartOut[] = [{ name: names[type] ?? 'Greep', solid: res.solid, quantity: q }];
+  for (const x of res.extra ?? []) parts.push({ ...x, quantity: (x.quantity ?? 1) * q });
+  return { parts, tips, info, warnings: res.warnings ?? [], scene: res.scene, defaultView: res.scene ? 'assembly' : undefined };
 }
 
 /** An uploaded SVG for the knob head. */
@@ -617,6 +862,7 @@ function assetsOf(p: Params): AssetRef[] {
 }
 
 const is = (...t: string[]) => (p: Params) => t.includes(str(p, 'type'));
+const barIs = (...st: string[]) => (p: Params) => str(p, 'type') === 'bar' && st.includes(p.barStyle === undefined ? 'straight' : str(p, 'barStyle'));
 
 export const handlesTool: ToolDef = {
   id: 'grepen',
@@ -697,12 +943,38 @@ export const handlesTool: ToolDef = {
       options: [...SPACINGS.map((s) => ({ value: String(s), label: `${s} mm` })), { value: 'custom', label: 'Eigen maat' }],
     },
     { type: 'number', key: 'spacingCustom', label: 'Eigen gatafstand', min: 20, max: 300, step: 1, unit: 'mm', default: 100, show: (p) => is('bar', 'arch', 'cup')(p) && str(p, 'spacing') === 'custom' },
+    {
+      type: 'select', key: 'barStyle', label: 'Vorm staaf', default: 'straight', show: is('bar'),
+      options: [
+        { value: 'straight', label: 'Recht (klassiek)' },
+        { value: 'twisted', label: 'Gedraaid' },
+        { value: 'wavy', label: 'Golvend' },
+        { value: 'bone', label: 'Bot' },
+        { value: 'branch', label: 'Tak (organisch)' },
+      ],
+    },
     { type: 'number', key: 'overhang', label: 'Uitsteek voorbij gat', min: 0, max: 60, step: 1, unit: 'mm', default: 18, show: is('bar') },
     { type: 'number', key: 'barD', label: 'Dikte staaf', min: 8, max: 30, step: 0.5, unit: 'mm', default: 12, show: is('bar') },
     { type: 'number', key: 'standoff', label: 'Ruimte voor vingers', min: 15, max: 50, step: 1, unit: 'mm', default: 24, show: is('bar') },
     { type: 'number', key: 'postD', label: 'Diameter pootjes', min: 8, max: 30, step: 0.5, unit: 'mm', default: 12, show: is('bar') },
     {
-      type: 'select', key: 'barProfile', label: 'Profiel staaf', default: 'round', show: is('bar'),
+      type: 'select', key: 'twistSection', label: 'Doorsnede', default: 'square', show: barIs('twisted'),
+      options: [
+        { value: 'square', label: 'Vierkant' },
+        { value: 'triangle', label: 'Driehoek' },
+        { value: 'star', label: 'Ster' },
+        { value: 'flower', label: 'Bloem' },
+        { value: 'cross', label: 'Kruis' },
+      ],
+    },
+    { type: 'number', key: 'barTwist', label: 'Draaiing', min: 45, max: 720, step: 15, unit: '°', default: 180, show: barIs('twisted') },
+    { type: 'number', key: 'waves', label: 'Golven tussen de gaten', min: 0.5, max: 4, step: 0.5, default: 1, show: barIs('wavy') },
+    { type: 'number', key: 'waveAmp', label: 'Golfhoogte', min: 2, max: 25, step: 0.5, unit: 'mm', default: 8, show: barIs('wavy') },
+    { type: 'number', key: 'boneSize', label: 'Grootte knokkels', min: 110, max: 220, step: 5, unit: '%', default: 160, show: barIs('bone') },
+    { type: 'number', key: 'branchKnots', label: 'Knoesten', min: 0, max: 100, step: 5, unit: '%', default: 50, show: barIs('branch') },
+    { type: 'number', key: 'branchSeed', label: 'Variant (willekeurig getal)', min: 1, max: 999, step: 1, default: 7, show: barIs('branch') },
+    {
+      type: 'select', key: 'barProfile', label: 'Profiel staaf', default: 'round', show: barIs('straight'),
       options: [
         { value: 'round', label: 'Rond' },
         { value: 'square', label: 'Vierkant (afgerond)' },
@@ -710,7 +982,7 @@ export const handlesTool: ToolDef = {
       ],
     },
     {
-      type: 'select', key: 'ends', label: 'Uiteinden', default: 'round', show: is('bar'),
+      type: 'select', key: 'ends', label: 'Uiteinden', default: 'round', show: barIs('straight'),
       options: [
         { value: 'round', label: 'Afgerond' },
         { value: 'flat', label: 'Recht' },
@@ -722,8 +994,12 @@ export const handlesTool: ToolDef = {
         { value: 'arch', label: 'Boog' },
         { value: 'flat', label: 'Platte boog' },
         { value: 'square', label: 'Beugel (hoekig)' },
+        { value: 'wave', label: 'Golf' },
+        { value: 'loop', label: 'Lus' },
       ],
     },
+    { type: 'number', key: 'archWave', label: 'Hoogte golven', min: 2, max: 20, step: 0.5, unit: 'mm', default: 7, show: (p) => is('arch')(p) && str(p, 'archShape') === 'wave' },
+    { type: 'number', key: 'loopD', label: 'Grootte lus', min: 16, max: 60, step: 1, unit: 'mm', default: 28, show: (p) => is('arch')(p) && str(p, 'archShape') === 'loop' },
     { type: 'number', key: 'clearance', label: 'Ruimte voor vingers', min: 15, max: 60, step: 1, unit: 'mm', default: 26, show: is('arch') },
     { type: 'number', key: 'archT', label: 'Dikte', min: 6, max: 20, step: 0.5, unit: 'mm', default: 10, show: is('arch') },
     { type: 'number', key: 'archW', label: 'Breedte', min: 8, max: 30, step: 0.5, unit: 'mm', default: 12, show: is('arch') },

@@ -245,6 +245,78 @@ export function gridSolid(M: ManifoldToplevel, g: PolarGrid, top: (k: number) =>
   return fromArrays(M, pos2, Uint32Array.from(idx, (v) => remap[v]));
 }
 
+/**
+ * A tube swept along a path in the plane z = `z` (bar handles). `radius(t, φ)`
+ * gives the section: φ = 0 points to the left of the path, φ = π/2 straight up
+ * (+Z). Round caps close the ends with a quarter circle; flat caps cut them off.
+ */
+export function tubeSolid(
+  M: ManifoldToplevel,
+  o: { path: (t: number) => [number, number]; z: number; radius: (t: number, phi: number) => number; rings: number; segs: number; caps: 'round' | 'flat'; capRings?: number },
+): Manifold {
+  const { rings, segs } = o;
+  const pos: number[] = [];
+  const frame = (t: number) => {
+    const h = 1e-4;
+    const a = o.path(Math.max(0, t - h));
+    const b = o.path(Math.min(1, t + h));
+    const l = Math.hypot(b[0] - a[0], b[1] - a[1]) || 1;
+    const T: [number, number] = [(b[0] - a[0]) / l, (b[1] - a[1]) / l];
+    return { c: o.path(t), T };
+  };
+  const ring = (t: number, scale: number, shift: number) => {
+    const { c, T } = frame(t);
+    for (let j = 0; j < segs; j++) {
+      const phi = (TAU * j) / segs;
+      const r = o.radius(t, phi) * scale;
+      const u = Math.cos(phi) * r;
+      pos.push(c[0] - T[1] * u + T[0] * shift, c[1] + T[0] * u + T[1] * shift, o.z + Math.sin(phi) * r);
+    }
+  };
+  const meanR = (t: number) => {
+    let s = 0;
+    for (let j = 0; j < segs; j++) s += o.radius(t, (TAU * j) / segs);
+    return s / segs;
+  };
+  const m = o.caps === 'round' ? (o.capRings ?? 8) : 0;
+  // start cap rings (outermost first), the body, then the end cap rings
+  const r0 = meanR(0);
+  const r1 = meanR(1);
+  for (let k = m - 1; k >= 1; k--) {
+    const a = (Math.PI / 2) * (k / m);
+    ring(0, Math.cos(a), -r0 * Math.sin(a));
+  }
+  for (let i = 0; i < rings; i++) ring(i / (rings - 1), 1, 0);
+  for (let k = 1; k < m; k++) {
+    const a = (Math.PI / 2) * (k / m);
+    ring(1, Math.cos(a), r1 * Math.sin(a));
+  }
+  const nr = pos.length / 3 / segs;
+  // the two tips: on the axis (round caps) or the end centres (flat caps)
+  const s = frame(0);
+  const e = frame(1);
+  const tipS = pos.length / 3;
+  pos.push(s.c[0] - s.T[0] * (m ? r0 : 0), s.c[1] - s.T[1] * (m ? r0 : 0), o.z);
+  const tipE = pos.length / 3;
+  pos.push(e.c[0] + e.T[0] * (m ? r1 : 0), e.c[1] + e.T[1] * (m ? r1 : 0), o.z);
+  const idx: number[] = [];
+  for (let i = 0; i < nr - 1; i++)
+    for (let j = 0; j < segs; j++) {
+      const j1 = (j + 1) % segs;
+      const a = i * segs + j;
+      const b = i * segs + j1;
+      const c = (i + 1) * segs + j1;
+      const d = (i + 1) * segs + j;
+      idx.push(a, b, c, a, c, d);
+    }
+  for (let j = 0; j < segs; j++) {
+    const j1 = (j + 1) % segs;
+    idx.push(tipS, j1, j);
+    idx.push((nr - 1) * segs + j, (nr - 1) * segs + j1, tipE);
+  }
+  return fromArrays(M, pos, idx);
+}
+
 /** Quarter-ellipse rise: 0 at u = 0 (vertical tangent), 1 at u ≥ 1. */
 export const rise = (u: number) => {
   const w = 1 - clamp(u, 0, 1);

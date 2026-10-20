@@ -23,3 +23,17 @@ describe('designknoppen', () => {
     expect(res.parts[0].volume).toBeGreaterThan(1000);
   });
 });
+
+const handle = (over: Partial<Params>): Params => ({ ...defaultsOf(handlesTool.params), ...over }) as Params;
+
+describe('abstracte staafgrepen', () => {
+  const cases: [string, string, string][] = [];
+  for (const barStyle of ['twisted', 'wavy', 'bone', 'branch']) for (const mount of ['tap', 'nut', 'insert']) cases.push([barStyle, mount, '128']);
+  it.each(cases)('%s / %s / %s', async (barStyle, mount, spacing) => {
+    const t0 = performance.now();
+    const res = await buildTool(M, handlesTool, handle({ type: 'bar', barStyle, mount, spacing }));
+    const ms = performance.now() - t0;
+    if (process.env.REPORT) console.log(barStyle, mount, Math.round(ms), 'ms', res.parts.map((q) => `${q.name} ${q.triangles} ${q.size.map((v) => v.toFixed(1)).join('x')}`).join(' | '), res.warnings.join(' / '));
+    for (const q of res.parts) expect(q.volume).toBeGreaterThan(500);
+  });
+});
