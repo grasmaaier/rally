@@ -514,9 +514,11 @@ function layoutWith(p: Params, deep: boolean): HolderLayout {
   const cupD = mount.cup.cupD;
   let W = Math.max(span + 2 * margin, 2 * R + 40, 2 * mount.rHead + 24, cupD + 8);
   const choice = str(p, 'cups');
-  let n = choice === 'auto' ? (W < 75 ? 1 : W < 210 ? 2 : 3) : clamp(Math.round(Number(choice)) || 2, 1, 3);
-  if (choice !== 'auto') W = Math.max(W, n * (cupD + 4) + 4);
-  else while (n > 1 && W < n * (cupD + 4) + 4) n--;
+  // a charger shelf carries the most weight: always two cups or more
+  const heavy = activeBrushes(p).some((b) => b.type === 'charger');
+  const n = choice === 'auto' ? (W < 75 && !heavy ? 1 : W < 210 ? 2 : 3) : clamp(Math.round(Number(choice)) || 2, 1, 3);
+  // widen the plate a little when the cups need it
+  W = Math.max(W, n * (cupD + 4) + 4);
   const xs: number[] = [];
   let x = -span / 2;
   for (const m of modules) {
