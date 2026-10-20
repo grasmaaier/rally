@@ -1,8 +1,8 @@
 import type { CrossSection, Manifold, ManifoldToplevel, Vec2, Vec3 } from 'manifold-3d';
-import type { BuildOutput, InfoBlock, Params, PartOut, SceneItem, ToolDef } from '../core/types';
+import type { BuildOutput, InfoBlock, Params, PartOut, PrinterProfile, SceneItem, ToolDef } from '../core/types';
 import { UserError, bool, num, str } from '../core/types';
 import { keep } from '../core/registry';
-import { fitsOn, usable } from '../core/printer';
+import { DEFAULT_PRINTER, fitsOn, usable } from '../core/printer';
 import { clamp, filletExtrude, roundedRect, teardrop } from '../geom/helpers';
 
 // ---------------------------------------------------------------------------
@@ -18,6 +18,7 @@ const H2 = Math.SQRT1_2;
 
 export interface BrushDims {
   label: string;
+  short: string;
   /** Handle cross-section (width along the wall, depth away from it). */
   handleW: number;
   handleD: number;
@@ -37,9 +38,9 @@ export interface BrushDims {
 }
 
 export const BRANDS: Record<string, BrushDims> = {
-  sonicare: { label: 'Philips Sonicare', handleW: 28, handleD: 30, neckW: 11, headW: 13, headBase: 12.5, pegD: 4.2, chargerD: 60, chargerH: 22, length: 255, headLen: 80 },
-  oralb: { label: 'Oral-B Pro / Vitality / Smart / Genius', handleW: 31, handleD: 34, neckW: 13, headW: 17, headBase: 13.5, pegD: 6.2, chargerD: 56, chargerH: 28, length: 235, headLen: 70 },
-  oralbio: { label: 'Oral-B iO', handleW: 31, handleD: 33, neckW: 12.5, headW: 17, headBase: 13, pegD: 6.2, chargerD: 62, chargerH: 16, length: 245, headLen: 72 },
+  sonicare: { label: 'Philips Sonicare', short: 'Sonicare', handleW: 28, handleD: 30, neckW: 11, headW: 13, headBase: 12.5, pegD: 4.2, chargerD: 60, chargerH: 22, length: 255, headLen: 80 },
+  oralb: { label: 'Oral-B Pro / Vitality / Smart / Genius', short: 'Oral-B', handleW: 31, handleD: 34, neckW: 13, headW: 17, headBase: 13.5, pegD: 6.2, chargerD: 56, chargerH: 28, length: 235, headLen: 70 },
+  oralbio: { label: 'Oral-B iO', short: 'Oral-B iO', handleW: 31, handleD: 33, neckW: 12.5, headW: 17, headBase: 13, pegD: 6.2, chargerD: 62, chargerH: 16, length: 245, headLen: 72 },
 };
 
 const BRAND_OPTIONS = [
@@ -54,6 +55,7 @@ function brushDims(p: Params, brand: string): BrushDims {
   if (b) return b;
   return {
     label: 'Eigen maat',
+    short: 'Eigen maat',
     handleW: num(p, 'handleW'),
     handleD: num(p, 'handleD'),
     neckW: num(p, 'neckW'),
@@ -71,6 +73,7 @@ function brushDims(p: Params, brand: string): BrushDims {
 
 export interface CupDims {
   label: string;
+  short: string;
   cupD: number;
   headD: number;
   headH: number;
@@ -81,9 +84,9 @@ export interface CupDims {
 }
 
 export const CUPS: Record<string, CupDims> = {
-  ha011: { label: 'Bambu HA011 40 mm', cupD: 40, headD: 12, headH: 3, neckD: 6, neckL: 3.5, standoff: 8 },
-  g40: { label: 'Generieke zuignap 40 mm', cupD: 40, headD: 11, headH: 2.5, neckD: 5.5, neckL: 3, standoff: 7 },
-  g30: { label: 'Generieke zuignap 30 mm', cupD: 30, headD: 9, headH: 2.5, neckD: 4.5, neckL: 2.5, standoff: 5 },
+  ha011: { label: 'Bambu HA011 40 mm', short: 'HA011 Ø40', cupD: 40, headD: 12, headH: 3, neckD: 6, neckL: 3.5, standoff: 8 },
+  g40: { label: 'Generieke zuignap 40 mm', short: 'Ø40', cupD: 40, headD: 11, headH: 2.5, neckD: 5.5, neckL: 3, standoff: 7 },
+  g30: { label: 'Generieke zuignap 30 mm', short: 'Ø30', cupD: 30, headD: 9, headH: 2.5, neckD: 4.5, neckL: 2.5, standoff: 5 },
 };
 
 function cupDims(p: Params): CupDims {
@@ -92,6 +95,7 @@ function cupDims(p: Params): CupDims {
   if (mount === 'keyhole' && c) return c;
   return {
     label: mount === 'keyhole' ? 'Eigen maat' : mount === 'hook' ? 'Zuignap met haakje' : 'Zuignap met gat',
+    short: `Ø${num(p, 'cupD')}${mount === 'hook' ? ' met haakje' : mount === 'pin' ? ' met gat' : ''}`,
     cupD: num(p, 'cupD'),
     headD: num(p, 'cupHeadD'),
     headH: num(p, 'cupHeadH'),
@@ -341,8 +345,8 @@ function chargerModule(b: BrushDims, o: Opts): Module {
 }
 
 /** Storage for spare brush heads: upright pegs or sockets with drains. */
-function headsModule(n: number, store: string, b: BrushDims, o: Opts, spacing: number): Module {
-  const rows = n > 3 ? 2 : 1;
+function headsModule(n: number, store: string, b: BrushDims, o: Opts, spacing: number, deep: boolean): Module {
+  const rows = Math.min(n, n > 3 ? (deep ? 3 : 2) : deep ? 2 : 1);
   const cols = Math.ceil(n / rows);
   const holeD = b.headBase + 2 * o.clr;
   const sp = Math.max(spacing, store === 'holes' ? holeD + 3 : b.pegD + 8, b.headW + 2);
@@ -411,7 +415,7 @@ function checkBrush(b: BrushDims) {
     throw new UserError(`${b.label}: de hals (${b.neckW} mm) moet minstens 4 mm smaller zijn dan het handvat, anders zakt de borstel door de vork.`);
 }
 
-function buildModules(p: Params): Module[] {
+function buildModules(p: Params, deep = false): Module[] {
   const o = opts(p);
   const mods: Module[] = [];
   for (const { type, dims } of activeBrushes(p)) {
@@ -422,7 +426,7 @@ function buildModules(p: Params): Module[] {
     else mods.push(ringModule(dims, o));
   }
   const heads = Math.round(num(p, 'heads'));
-  if (heads > 0) mods.push(headsModule(heads, str(p, 'headStore'), activeBrushes(p)[0].dims, o, num(p, 'headSpacing')));
+  if (heads > 0) mods.push(headsModule(heads, str(p, 'headStore'), activeBrushes(p)[0].dims, o, num(p, 'headSpacing'), deep));
   if (bool(p, 'paste')) {
     const cap = num(p, 'capD');
     const tubeT = num(p, 'tubeT');
@@ -492,9 +496,17 @@ export interface HolderLayout {
   depth: number;
 }
 
-export function holderLayout(p: Params): HolderLayout {
+export function holderLayout(p: Params, printer: PrinterProfile = DEFAULT_PRINTER): HolderLayout {
+  const L = layoutWith(p, false);
+  const u = usable(printer);
+  // too wide: store the spare heads in more rows (deeper instead of wider)
+  if (L.W > Math.max(u.x, u.y) && num(p, 'heads') > 1) return layoutWith(p, true);
+  return L;
+}
+
+function layoutWith(p: Params, deep: boolean): HolderLayout {
   const mount = mountPlan(p);
-  const modules = buildModules(p);
+  const modules = buildModules(p, deep);
   const gap = num(p, 'gap');
   const margin = 6;
   const R = num(p, 'plateR');
@@ -523,7 +535,8 @@ function mountCut(M: ManifoldToplevel, mp: MountPlan, x: number): { cut?: Manifo
   if (mp.kind === 'pin') {
     const r = mp.rHead;
     // teardrop pin with its tip clipped flat so it still fits a round hole
-    const prof = teardrop(M, r, 32).intersect(rect(M, -r - 1, r + 1, -r - 1, r));
+    // solid horizontal pin: the point faces down so its underside is 45°
+    const prof = teardrop(M, r, 32).rotate(180).intersect(rect(M, -r - 1, r + 1, -r, r + 1));
     const L = clamp(Math.min(mp.cup.neckL, mp.cup.standoff - 1), 1.5, 20);
     return { add: xzPrism(prof.translate([x, mp.zTop]), -0.5, L) };
   }
@@ -532,13 +545,40 @@ function mountCut(M: ManifoldToplevel, mp: MountPlan, x: number): { cut?: Manifo
   return { cut: M.Manifold.union([xzPrism(through, -mp.T - 1, 1), xzPrism(pocket, -mp.T - 1, -mp.thin)]) };
 }
 
+/**
+ * Plate outline in XZ: rounded top corners, bottom corners that end in a 45°
+ * chamfer (a "teardrop" corner) so the upright plate has no overhang.
+ */
+function plateOutline(M: ManifoldToplevel, W: number, z0: number, z1: number, r: number): CrossSection {
+  const pts: Vec2[] = [];
+  const seg = 10;
+  const arc = (cx: number, cy: number, a0: number, a1: number) => {
+    for (let i = 0; i <= seg; i++) {
+      const a = ((a0 + ((a1 - a0) * i) / seg) * Math.PI) / 180;
+      pts.push([cx + r * Math.cos(a), cy + r * Math.sin(a)]);
+    }
+  };
+  const k = r * (Math.SQRT2 - 1);
+  pts.push([W / 2 - r + k, z0]);
+  arc(W / 2 - r, z0 + r, -45, 0);
+  arc(W / 2 - r, z1 - r, 0, 90);
+  arc(-W / 2 + r, z1 - r, 90, 180);
+  arc(-W / 2 + r, z0 + r, 180, 225);
+  pts.push([-W / 2 + r - k, z0]);
+  return poly(M, pts);
+}
+
 /** Back plate with keyholes and standoff pads, in plate coordinates (module tops at z = 0). */
 function backPlate(M: ManifoldToplevel, L: HolderLayout, R: number, cupXs: number[], zBottom: number, zTop: number, W: number, pads: boolean): Manifold {
   const mp = L.mount;
   const H = zTop - zBottom;
   const r = Math.min(R, W / 2 - 1, H / 2 - 1);
-  const outline = roundedRect(M, W, H, r, 10).translate([0, zBottom + H / 2]);
-  let plate = filletExtrude(M, outline, mp.T, 0.4, 1.2, 0.4).rotate([90, 0, 0]);
+  const outline = plateOutline(M, W, zBottom, zTop, r);
+  // rounded front edges; the bottom 1.5 mm stays square so nothing overhangs right above the bed
+  let plate = M.Manifold.union([
+    filletExtrude(M, outline, mp.T, 0.4, 1.2, 0.4).rotate([90, 0, 0]),
+    xzPrism(outline.intersect(rect(M, -W, W, zBottom - 1, zBottom + 1.5)), -mp.T, 0),
+  ]);
   const cuts: Manifold[] = [];
   const adds: Manifold[] = [plate];
   for (const x of cupXs) {
@@ -648,12 +688,18 @@ function fitTests(M: ManifoldToplevel, p: Params): BuildOutput {
 function brandRows(p: Params): [string, string][] {
   const rows: [string, string][] = [];
   const seen = new Set<string>();
-  for (const { brand, dims: b } of activeBrushes(p)) {
+  const brushes = activeBrushes(p);
+  for (const { brand, dims: b } of brushes) {
     if (seen.has(brand)) continue;
     seen.add(brand);
-    rows.push([`${b.label}: handvat`, `${b.handleW} × ${b.handleD} mm`]);
-    rows.push([`${b.label}: hals / kop`, `${b.neckW} / ${b.headW} mm`]);
-    rows.push([`${b.label}: oplader`, `Ø${b.chargerD} × ${b.chargerH} mm`]);
+    const types = brushes.filter((x) => x.brand === brand).map((x) => x.type);
+    rows.push([`${b.short} handvat`, `${b.handleW} × ${b.handleD} mm`]);
+    if (types.includes('fork') || str(p, 'mode') === 'test') rows.push([`${b.short} hals / kop`, `${b.neckW} / ${b.headW} mm`]);
+    if (types.includes('charger')) rows.push([`${b.short} oplader`, `Ø${b.chargerD} × ${b.chargerH} mm`]);
+  }
+  if (num(p, 'heads') > 0 || str(p, 'mode') === 'test') {
+    const b = brushes[0].dims;
+    rows.push([`${b.short} opzetborstel`, `voet Ø${b.headBase}, pen Ø${b.pegD} mm`]);
   }
   return rows;
 }
@@ -662,7 +708,7 @@ function brandRows(p: Params): [string, string][] {
 
 function build(p: Params, { M, printer }: Parameters<ToolDef['build']>[1]): BuildOutput {
   if (str(p, 'mode') === 'test') return fitTests(M, p);
-  const L = holderLayout(p);
+  const L = holderLayout(p, printer);
   const mp = L.mount;
   const H = L.zTopPlate - L.zBottom;
   const size: [number, number, number] = [L.W, L.depth, H];
@@ -683,8 +729,9 @@ function build(p: Params, { M, printer }: Parameters<ToolDef['build']>[1]): Buil
   for (const x of L.cupXs) {
     scene.push(ghost([c.cupD, c.standoff, c.cupD], x, c.standoff / 2, mp.zTop - c.cupD / 2, CUP, 'Zuignap'));
   }
-  const wallH = H + 260;
-  scene.push({ kind: 'box', size: [L.W + 160, 6, wallH], position: [-L.W / 2 - 80, c.standoff, L.zBottom - 80], color: WALL, material: 'ghost', label: 'Tegels / spiegel' });
+  // a piece of wall just big enough for the holder and its brushes
+  const top = Math.max(L.zTopPlate, ...scene.map((s) => (s.kind === 'box' ? s.position[2] + s.size[2] : 0)));
+  scene.push({ kind: 'box', size: [L.W + 40, 4, top - L.zBottom + 40], position: [-L.W / 2 - 20, c.standoff, L.zBottom - 20], color: WALL, material: 'ghost', label: 'Tegels / spiegel' });
 
   const brushes = activeBrushes(p);
   const tips: string[] = [
@@ -713,11 +760,10 @@ function build(p: Params, { M, printer }: Parameters<ToolDef['build']>[1]): Buil
       kind: 'kv',
       title: 'Houder',
       rows: [
-        ['Afmeting (b × d × h)', `${Math.round(L.W)} × ${Math.round(L.depth - c.standoff)} × ${Math.round(H)} mm`],
-        ['Onderdelen', L.modules.map((m) => m.label).join(', ')],
-        ['Zuignappen', `${L.cupXs.length} × ${c.label}`],
-        ...(L.cupXs.length > 1 ? [['Afstand zuignappen (hart-op-hart)', `${Math.round(L.cupXs[1] - L.cupXs[0])} mm`] as [string, string]] : []),
-        ['Plaatdikte', mp.kind === 'pin' ? `${mp.T.toFixed(1)} mm` : `${mp.T.toFixed(1)} mm (bij de sleuf ${mp.thin.toFixed(1)} mm)`],
+        ['Maat (b × d × h)', `${Math.round(L.W)} × ${Math.round(L.depth - c.standoff)} × ${Math.round(H)} mm`],
+        ['Zuignappen', `${L.cupXs.length} × ${c.short}`],
+        ...(L.cupXs.length > 1 ? [['Hart-op-hart', `${Math.round(L.cupXs[1] - L.cupXs[0])} mm`] as [string, string]] : []),
+        ['Plaatdikte', mp.kind === 'pin' ? `${mp.T.toFixed(1)} mm` : `${mp.T.toFixed(1)} mm, ${mp.thin.toFixed(1)} bij ${mp.kind === 'keyhole' ? 'de sleuf' : 'het oog'}`],
       ],
     },
     { kind: 'kv', title: 'Maten (richtwaarde — meet je eigen borstel na)', rows: brandRows(p) },
