@@ -664,7 +664,7 @@ export interface Ring {
 }
 
 const RING_FLANGE = { w: 13, t: 4 };
-const DOVE = { root: 5, tip: 7.5, len: 6, clear: 0.25 };
+const DOVE = { root: 4.5, tip: 8, len: 5, clear: 0.25 };
 
 /** Bounding box of an annulus sector of half-angle `h` (radians), centred on +X. */
 function sectorBox(ro: number, ri: number, h: number): [number, number] {

@@ -560,7 +560,20 @@ function legLayout(b: BoardShape, n: number, dist: number, minSpacing: number): 
     else pts = [...corners, side(-1 / 3, -1), side(1 / 3, -1), side(-1 / 3, 1), side(1 / 3, 1)];
   } else {
     const rad = radialFromPolygons([b.poly]);
-    const start = n % 2 === 1 ? Math.PI / 2 : Math.PI / n;
+    // symmetric default; turn the pattern when that puts the legs much further out (lobes of a flower, a star)
+    const reach = (s: number) => Math.min(...Array.from({ length: n }, (_, k) => rad(s + (TAU * k) / n)));
+    const start0 = n % 2 === 1 ? Math.PI / 2 : Math.PI / n;
+    let start = start0;
+    const def = reach(start0);
+    let best = def;
+    for (let i = 1; i < 48; i++) {
+      const s = start0 + (TAU * i) / n / 48;
+      const r = reach(s);
+      if (r > best + 0.5 && r > def * 1.06) {
+        best = r;
+        start = s;
+      }
+    }
     pts = Array.from({ length: n }, (_, k) => {
       const th = start + (TAU * k) / n;
       const r = rad(th) - dist;
