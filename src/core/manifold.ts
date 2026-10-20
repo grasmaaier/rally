@@ -1,7 +1,7 @@
 import Module from 'manifold-3d';
 import type { ManifoldToplevel } from 'manifold-3d';
 
-import { track } from './registry';
+import { fixLeakyWrappers, track } from './registry';
 
 export { collect, keep } from './registry';
 
@@ -45,6 +45,7 @@ export function initManifold(wasmUrl?: string): Promise<ManifoldToplevel> {
       const crossProto = Object.getPrototypeOf(probeC) as Record<string, unknown>;
       probeM.delete();
       probeC.delete();
+      fixLeakyWrappers(M, crossProto);
       intercept(M.Manifold as unknown as Record<string, unknown>, MANIFOLD_STATIC);
       intercept(manifoldProto, MANIFOLD_MEMBER);
       intercept(M.CrossSection as unknown as Record<string, unknown>, CROSS_STATIC);
