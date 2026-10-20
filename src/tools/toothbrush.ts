@@ -756,6 +756,8 @@ function build(p: Params, { M, printer }: Parameters<ToolDef['build']>[1]): Buil
   if (brushes.some((b) => b.type === 'fork')) tips.push('Ophangvork: schuif de borstel met de kop naar beneden van voren in de sleuf; het handvat zakt in het kuiltje en blijft zo staan.');
   const warnings: string[] = [];
   if (brushes.some((b) => BRANDS[b.brand])) warnings.push('De merkmaten zijn richtwaardes — meet je eigen borstel na of print eerst de pasproef.');
+  const chargers = brushes.filter((b) => b.type === 'charger').length;
+  if (chargers >= 2) warnings.push(`${chargers} opladers met borstels wegen samen al gauw een kilo: gebruik 40 mm zuignappen op gladde tegels, of maak liever losse houders.`);
   if (H > 220) warnings.push(`De houder is ${Math.round(H)} mm hoog: gebruik zeker een brim, of print een kleinere variant.`);
   const info: InfoBlock[] = [
     {
