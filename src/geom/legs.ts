@@ -658,6 +658,8 @@ export interface Ring {
   /** Angle of one segment, degrees. */
   angle: number;
   holesPerSegment: number;
+  /** Radius of the screw holes in the flange. */
+  holeRadius: number;
   /** Bounding box of a segment on the bed. */
   size: [number, number];
   warnings: string[];
@@ -798,5 +800,5 @@ export function buildRing(M: ManifoldToplevel, spec: RingSpec, minSegments = 1):
     if (n < 64) return buildRing(M, spec, n + 1);
     warnings.push('Een ringsegment is net te groot voor het bed.');
   }
-  return { solid, segments: n, angle: (ang * 180) / Math.PI, holesPerSegment: holeAngles.length, size, warnings };
+  return { solid, segments: n, angle: (ang * 180) / Math.PI, holesPerSegment: holeAngles.length, holeRadius: hr, size, warnings };
 }

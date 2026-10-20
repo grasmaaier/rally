@@ -517,7 +517,7 @@ function boardShape(p: Params, form: string, W: number, D: number, dia: number, 
     const sy = D / (by[1] - by[0]);
     const ox = (bx[0] + bx[1]) / 2;
     const oy = (by[0] + by[1]) / 2;
-    const label = SHAPE_OPTIONS.find((o) => o.value === spec.shape)?.label.toLowerCase() ?? 'eigen vorm';
+    const label = (SHAPE_OPTIONS.find((o) => o.value === spec.shape)?.label ?? 'eigen vorm').replace(/\s*\(.*\)/, '').toLowerCase();
     return {
       poly: pts.map(([x, y]) => [(x - ox) * sx, (y - oy) * sy] as Pt),
       boxy: false,
@@ -543,7 +543,7 @@ function scaledShape(b: BoardShape, k: number): BoardShape {
  * edge. Boxy boards get legs in the corners (plus extras along the sides),
  * other shapes evenly around, pulled inward until they are clear of the edge.
  */
-function legLayout(b: BoardShape, n: number, dist: number, minSpacing: number): Pt[] {
+function legLayout(b: BoardShape, n: number, dist: number, minSpacing: number, turn = 0): Pt[] {
   let pts: Pt[];
   if (b.boxy) {
     const X = b.w / 2 - dist;
@@ -562,7 +562,7 @@ function legLayout(b: BoardShape, n: number, dist: number, minSpacing: number): 
     const rad = radialFromPolygons([b.poly]);
     // symmetric default; turn the pattern when that puts the legs much further out (lobes of a flower, a star)
     const reach = (s: number) => Math.min(...Array.from({ length: n }, (_, k) => rad(s + (TAU * k) / n)));
-    const start0 = n % 2 === 1 ? Math.PI / 2 : Math.PI / n;
+    const start0 = (n % 2 === 1 ? Math.PI / 2 : Math.PI / n) + turn;
     let start = start0;
     const def = reach(start0);
     let best = def;
@@ -638,6 +638,8 @@ function riser(M: ManifoldToplevel, p: Params, printer: PrinterProfile, assets: 
   const printed: [number, string][] = [];
   // board heights (underside)
   const zb = boards.map((_, i) => legH + i * (t + gap));
+  // what is screwed under the bottom board (column screws from below must stay clear of it)
+  let blocked: (x: number, y: number) => boolean = () => false;
 
   if (support === 'ring') {
     checkHeight(legH, printer, 'Een ring');
@@ -649,11 +651,13 @@ function riser(M: ManifoldToplevel, p: Params, printer: PrinterProfile, assets: 
     parts.push({ name, solid: ring.solid, quantity: ring.segments });
     for (let i = 0; i < ring.segments; i++) scene.push({ kind: 'part', part: idx, matrix: mul(translation(0, 0, legH), mul(rotZ(90 + i * ring.angle), rotX(180))) });
     printed.push([ring.segments, name]);
+    blocked = (x, y) => Math.abs(Math.hypot(x, y) - ring.holeRadius) < 12;
     hardware.push([ring.segments * ring.holesPerSegment, `Verzonken houtschroef 4 × ${screwLen(4 + t - 3)} mm`, 'ring onder de plank']);
     tips.push(
       ring.segments > 1
-        ? `De ring bestaat uit ${ring.segments} segmenten met zwaluwstaarten: schuif ze van bovenaf in elkaar, leg de plank erop en schroef hem door de flens vast.`
-        : 'Print de ring met de flens op het bed: zo is er nergens support nodig. Schroef de plank door de flens vast.',
+        ? `De ring bestaat uit ${ring.segments} segmenten met zwaluwstaarten: schuif ze van bovenaf in elkaar. Leg de plank omgekeerd neer, zet de ring erop en schroef hem door de flens vast.`
+        : 'Leg de plank omgekeerd neer, zet de ring erop en schroef hem door de flens vast.',
+      'Print de ring met de flens op het bed: zo is er nergens support nodig.',
     );
   } else {
     checkHeight(legH, printer, 'Een poot');
@@ -668,7 +672,8 @@ function riser(M: ManifoldToplevel, p: Params, printer: PrinterProfile, assets: 
     for (const [x, y] of pts) scene.push({ kind: 'part', part: idx, matrix: legMatrix(leg, x, y, legH, radial ? ANGLE(x, y) : 0) });
     printed.push([n, `Poot (${legDescription(leg)})`]);
     hardware.push(...legHardware(leg, n, t));
-    tips.push(...legTips(leg));
+    blocked = (x, y) => pts.some(([lx, ly]) => Math.hypot(x - lx, y - ly) < leg.plateR + 6);
+    tips.push('Leg de plank omgekeerd op een handdoek, zet de poten erop en schroef ze vast.', ...legTips(leg));
   }
 
   // columns between the tiers, screwed under the upper board and from below into the lower one
@@ -680,10 +685,21 @@ function riser(M: ManifoldToplevel, p: Params, printer: PrinterProfile, assets: 
     const idx = parts.length;
     parts.push({ name: 'Zuil etagère', solid: col.solid, quantity: nc * (tiers - 1) });
     for (let i = 1; i < tiers; i++) {
-      const pts = legLayout(boards[i], nc, Math.max(inset, 10) + col.plateR, 2 * col.plateR + 4);
+      // turned half a step against the legs below; moved inward when they would still land on the legs or ring
+      const dist = Math.max(inset, 10) + col.plateR;
+      const turn = base.boxy ? 0 : Math.PI / nc;
+      let pts = legLayout(boards[i], nc, dist, 2 * col.plateR + 4, turn);
+      for (let extra = 5; i === 1 && pts.some(([x, y]) => blocked(x, y)) && extra <= 300; extra += 5) {
+        try {
+          pts = legLayout(boards[i], nc, dist + extra, 2 * col.plateR + 4, turn);
+        } catch {
+          break;
+        }
+      }
       for (const [x, y] of pts) {
         // the foot must stand on the board below
-        if (edgeDist(boards[i - 1].poly, x, y) < col.footR + 2) throw new UserError('De bovenste laag is te groot voor de laag eronder: maak "Volgende laag" kleiner.');
+        if (edgeDist(boards[i - 1].poly, x, y) < col.footR + 2) throw new UserError('De bovenste laag is te groot voor de laag eronder: maak "Grootte volgende laag" kleiner.');
+        if (i === 1 && blocked(x, y)) throw new UserError('De zuilen komen precies boven het onderstel: daar kun je ze van onderen niet vastschroeven. Maak "Grootte volgende laag" kleiner of groter.');
         scene.push({ kind: 'part', part: idx, matrix: legMatrix(col, x, y, zb[i], base.boxy ? 0 : ANGLE(x, y)) });
       }
     }
