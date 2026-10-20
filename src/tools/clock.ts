@@ -6,7 +6,7 @@ import { FONT_OPTIONS, fontKey } from '../core/fonts';
 import { usable } from '../core/printer';
 import { keep } from '../core/registry';
 import { TAU, clamp, deg, identity, mul, rotX, rotZ, translation, type M4 } from '../geom/helpers';
-import { sizeForHeight, textCross } from '../geom/text';
+import { missingChars, sizeForHeight, textCross } from '../geom/text';
 import { effectiveSpec, radialShape, shapeAssets, shapeCross, shapeParams, shapeSpecFrom, type ShapeSpec } from '../geom/shapes2d';
 import {
   HAND_STYLES, MOVEMENTS, PLA_DENSITY, TICK_STYLES, areaStats, disc, edgeExtrude, fitStrip, handCross, holeCross, nl, polygon, polygonsOf, secondCross, tickCross,
@@ -67,6 +67,17 @@ function numeralLabels(p: Params): { labels: string[]; start: number } {
 
 /** Horizontal scale of the numerals (1 = as drawn by the font). */
 const numWidth = (p: Params) => (p.numWidth === undefined ? 1 : num(p, 'numWidth') / 100);
+
+/**
+ * Rotation (degrees) of a numeral at `angle`: upright, radial (tops pointing
+ * outward, so the 6 stands on its head as on classic dials) or radial with
+ * the lower half turned round so it stays readable.
+ */
+function numeralRot(orient: string, angle: number) {
+  if (orient !== 'radial' && orient !== 'readable') return 0;
+  const rot = angle - 90;
+  return orient === 'readable' && Math.sin(deg(angle)) < -1e-6 ? rot + 180 : rot;
+}
 
 /** Angle (degrees, CCW from +X) of label i of n. */
 const labelAngle = (i: number, n: number, start: number) => 90 - (360 * (i + start)) / n;
@@ -218,31 +229,28 @@ function placeNumerals(M: ManifoldToplevel, p: Params, font: Font, geo: DialGeo,
   const n = labels.length;
   const H = (num(p, 'numSize') / 100) * geo.D;
   const fs = sizeForHeight(font, H);
-  const radial = str(p, 'numOrient') === 'radial';
+  const orient = str(p, 'numOrient');
   // numerals that follow a round outline still sit on one circle
   const follow = bool(p, 'follow') && geo.spec.shape !== 'circle';
   const widthK = numWidth(p);
   const k = num(p, 'numPos') / 100;
   const margin = Math.max(1.5, 0.015 * geo.D);
-  const missing: string[] = [];
+  const missing = missingChars(font, labels.join(''));
+  if (missing.length) warnings.push(`Dit lettertype heeft geen tekens voor: ${missing.join(' ')} (weggelaten). Kies een ander lettertype of upload er een.`);
   const items = labels.map((label, i) => {
     if (!label) return null;
     let cs = textCross(M, font, label, fs);
     if (Math.abs(widthK - 1) > 1e-3) cs = cs.scale([widthK, 1]);
-    if (cs.isEmpty() || cs.area() < 0.01) {
-      missing.push(label);
-      return null;
-    }
+    if (cs.isEmpty() || cs.area() < 0.01) return null;
     const angle = labelAngle(i, n, start);
     const th = deg(angle);
-    const rot = radial ? angle - 90 : 0;
+    const rot = numeralRot(orient, angle);
     const c = Math.cos(deg(rot));
     const s = Math.sin(deg(rot));
     // rotated outline points, ready for the inside test
     const pts = polygonsOf(cs).flat().map(([x, y]) => [x * c - y * s, x * s + y * c] as Vec2);
     return { label, cs, angle, th, rot, pts, r0: k * (follow ? geo.ru(th) : geo.ruMin) };
   });
-  if (missing.length) warnings.push(`Dit lettertype heeft geen tekens voor: ${missing.join(' ')}`);
   type Item = NonNullable<(typeof items)[number]>;
   // keep clear of the tick ring: stay inside it, or outside when the ticks run inside the numerals
   const gap = Math.max(1.5, 0.012 * geo.D);
@@ -643,7 +651,7 @@ function dialSolid(ctx: Ctx, geo: DialGeo, decor: CrossSection | null, rimOn: bo
     const pocket = pocketKind === 'round' ? M.CrossSection.circle(s / 2, 96) : M.CrossSection.square([s, s], true).offset(-1.5, 'Round').offset(1.5, 'Round');
     if (pocket.subtract(geo.outline.offset(-1.2, 'Round')).area() > 1) warnings.push('De uitsparing voor het uurwerk komt aan de rand naar buiten: maak de wijzerplaat groter of de uitsparing kleiner.');
     cut.push(pocket.extrude(pd + 0.01).translate([0, 0, -0.01]));
-    if (!faceDown) tips.push(`De uitsparing aan de achterkant ligt op het bed en wordt overbrugd (${Math.round(s)} mm). Bambu Studio doet dat vanzelf; support is niet nodig.`);
+    if (!faceDown) tips.push(`De uitsparing aan de achterkant ligt op het bed; het plafond ervan wordt overbrugd (${Math.round(s)} mm). Dat lukt meestal zonder support. Zakt het door, zet dan support aan (alleen vanaf het bed): aan de achterkant zie je er niets van.`);
   }
   const solid = (add.length > 1 ? M.Manifold.union(add) : add[0]).subtract(M.Manifold.union(cut));
   return { solid, faceDown, T, Tc: T - pd, pocketDepth: pd, raisedTop: raised && hasDecor ? T + reliefH : T, rimTop };
@@ -687,7 +695,7 @@ function colourTips(ctx: Ctx, d: DialPart, raised: boolean, depth: number) {
 
 /** Mode "Complete klok" and "Alleen wijzerplaat". */
 function buildDialModes(ctx: Ctx, withHands: boolean): BuildOutput {
-  const { M, p, warnings, info } = ctx;
+  const { M, p, warnings, tips, info } = ctx;
   const D = num(p, 'diameter');
   const rimOn = bool(p, 'rim');
   const geo = dialGeo(M, p, D, rimOn ? num(p, 'rimW') : 0, ctx.assets);
@@ -731,8 +739,10 @@ function buildDialModes(ctx: Ctx, withHands: boolean): BuildOutput {
   if (labelText && font) {
     const H = (num(p, 'labelSize') / 100) * D;
     let cs = textCross(M, font, labelText, sizeForHeight(font, H));
-    if (cs.isEmpty()) warnings.push('Dit lettertype heeft geen tekens voor de tekst op de wijzerplaat.');
+    const miss = missingChars(font, labelText);
+    if (cs.isEmpty() || cs.area() < 0.01) warnings.push('Dit lettertype heeft geen tekens voor de tekst op de wijzerplaat.');
     else {
+      if (miss.length) warnings.push(`Dit lettertype heeft geen tekens voor: ${miss.join(' ')} (weggelaten uit de tekst).`);
       const b = cs.bounds();
       let w = b.max[0] - b.min[0];
       let h = b.max[1] - b.min[1];
@@ -771,6 +781,10 @@ function buildDialModes(ctx: Ctx, withHands: boolean): BuildOutput {
   ];
   info.push({ kind: 'kv', title: 'Wijzerplaat', rows: dialRows });
   colourTips(ctx, dial, raised, depth);
+  if (withHands && raised && dial.raisedTop > dial.T) {
+    tips.push('De uurwijzer moet vrij over de verhoogde cijfers draaien. Zit hij te dicht op de plaat, maak dan het reliëf lager of gebruik de uitsparing aan de achterkant: dan komt de plaat verder naar achteren.');
+  }
+  tips.push('Ophangen: het uurwerk heeft meestal een ophangoogje aan de achterkant; de plaat hangt eraan vast via de moer op de as.');
 
   // assembled view
   const lift = geo.R + 20;
@@ -794,7 +808,13 @@ function buildDialModes(ctx: Ctx, withHands: boolean): BuildOutput {
         }
       }
     }
-    if (hands.some((h) => h.kind === 'minute' && h.length > geo.ruMin + geo.inset + 2)) warnings.push('De minutenwijzer steekt buiten de wijzerplaat uit.');
+    // a hand may sweep past a notch of a shaped dial, but not past most of the edge
+    const minute = hands.find((h) => h.kind === 'minute');
+    if (minute) {
+      let out = 0;
+      for (let i = 0; i < 360; i++) if (minute.length > geo.R * geo.rho(deg(i)) + 1) out++;
+      if (out > 90) warnings.push('De minutenwijzer steekt op veel plekken buiten de wijzerplaat uit: maak hem korter.');
+    }
     info.push(handInfo(hands));
     torqueWarnings(ctx, hands);
   }
@@ -909,7 +929,7 @@ function buildWallMode(ctx: Ctx): BuildOutput {
   if (Rc < 60) throw new UserError('De cijfers zijn te groot voor deze diameter: maak de klok op de muur groter of de cijfers kleiner.');
   const backing = str(p, 'wallBacking');
   const mount = str(p, 'wallMount');
-  const radial = str(p, 'numOrient') === 'radial';
+  const orient = str(p, 'numOrient');
   const u = usable(ctx.printer);
   const parts: PartOut[] = [];
   const scene: SceneItem[] = [];
@@ -949,8 +969,7 @@ function buildWallMode(ctx: Ctx): BuildOutput {
   };
 
   const placeOnWall = (part: number, angle: number, x: number, y: number) => {
-    const rot = radial ? angle - 90 : 0;
-    scene.push({ kind: 'part', part, matrix: mul(world, mul(translation(x, y, 0), rotZ(rot))) });
+    scene.push({ kind: 'part', part, matrix: mul(world, mul(translation(x, y, 0), rotZ(numeralRot(orient, angle)))) });
   };
 
   const { labels, start } = numeralLabels(p);
@@ -960,21 +979,30 @@ function buildWallMode(ctx: Ctx): BuildOutput {
   if (usesNumerals(p) && labels.some(Boolean)) {
     const font = ctx.assets.font(fontRef(p));
     const fs = sizeForHeight(font, H);
+    const missing = missingChars(font, labels.join(''));
+    if (missing.length) warnings.push(`Dit lettertype heeft geen tekens voor: ${missing.join(' ')} (weggelaten). Kies een ander lettertype of upload er een.`);
+    // the same label twice (e.g. dots in custom labels) is one part printed several times
+    const made = new Map<string, { part: number; back: CrossSection }>();
     labels.forEach((label, i) => {
       if (!label) return;
-      let cs = textCross(M, font, label, fs);
-      if (cs.isEmpty() || cs.area() < 0.01) return;
-      if (Math.abs(numWidth(p) - 1) > 1e-3) cs = cs.scale([numWidth(p), 1]);
+      let entry = made.get(label);
+      if (!entry) {
+        let cs = textCross(M, font, label, fs);
+        if (cs.isEmpty() || cs.area() < 0.01) return;
+        if (Math.abs(numWidth(p) - 1) > 1e-3) cs = cs.scale([numWidth(p), 1]);
+        const { solid, back } = piece(cs, `Cijfer ${label}`);
+        entry = { part: parts.length, back };
+        made.set(label, entry);
+        parts.push({ name: `Cijfer ${label}`, solid, quantity: 0 });
+      }
       const angle = labelAngle(i, n, start);
       const th = deg(angle);
       const x = Rc * Math.cos(th);
       const y = Rc * Math.sin(th);
-      const name = `Cijfer ${label}`;
-      const { solid, back } = piece(cs, name);
-      backs.push({ a: (90 - angle + 720) % 360, cs: back.rotate(radial ? angle - 90 : 0).translate([x, y]) });
+      parts[entry.part].quantity = (parts[entry.part].quantity ?? 0) + 1;
+      backs.push({ a: (90 - angle + 720) % 360, cs: entry.back.rotate(numeralRot(orient, angle)).translate([x, y]) });
       used.push(angle);
-      placeOnWall(parts.length, angle, x, y);
-      parts.push({ name, solid });
+      placeOnWall(entry.part, angle, x, y);
       rows.push([label, Math.round((((90 - angle) % 360) + 360) % 360), mm(x), mm(y)]);
     });
   }
@@ -1186,7 +1214,7 @@ const params: ParamDef[] = [
   { type: 'number', key: 'centerD', label: 'Diameter middenplaat', min: 60, max: 250, step: 1, unit: 'mm', default: 100, show: is('wall'), help: 'Het plaatje voor het uurwerk, midden op de muur.' },
   ...shapeParams('dial', { shape: 'circle', count: 12, depth: 20, rounding: 50 }, { label: 'Vorm', custom: true, show: usesShape }),
   { type: 'number', key: 'dialRotate', label: 'Vorm draaien', min: -180, max: 180, step: 1, unit: '°', default: 0, show: (p) => usesShape(p) && str(p, 'dialShape') !== 'circle', help: 'Bloemen en sterren staan vanzelf met een blad of punt op 12 uur.' },
-  { type: 'number', key: 'dialT', label: 'Dikte plaat', min: 2, max: 12, step: 0.2, unit: 'mm', default: 4, show: usesShape },
+  { type: 'number', key: 'dialT', label: 'Dikte plaat', min: 2, max: 12, step: 0.2, unit: 'mm', default: 3, show: usesShape, help: 'Hoe dunner, hoe korter de as van het uurwerk mag zijn. 3 mm is stevig genoeg tot ca. 30 cm.' },
   { type: 'number', key: 'edge', label: 'Afronding voorrand', min: 0, max: 3, step: 0.2, unit: 'mm', default: 1, show: usesShape },
   { type: 'bool', key: 'rim', label: 'Opstaande rand', default: false, show: hasDialParams },
   { type: 'number', key: 'rimW', label: 'Breedte rand', min: 1.2, max: 25, step: 0.2, unit: 'mm', default: 5, show: (p) => hasDialParams(p) && bool(p, 'rim') },
@@ -1235,7 +1263,8 @@ const params: ParamDef[] = [
     type: 'select', key: 'numOrient', label: 'Stand van de cijfers', default: 'upright', show: usesNumerals,
     options: [
       { value: 'upright', label: 'Rechtop' },
-      { value: 'radial', label: 'Mee met de cirkel' },
+      { value: 'radial', label: 'Mee met de cirkel (klassiek)' },
+      { value: 'readable', label: 'Mee met de cirkel, onderaan leesbaar' },
     ],
   },
   { type: 'bool', key: 'follow', label: 'Cijfers volgen de vorm', default: true, show: (p) => hasDialParams(p) && usesNumerals(p) && str(p, 'dialShape') !== 'circle', help: 'Uit: de cijfers staan in een cirkel.' },

@@ -57,7 +57,7 @@ describe('klok: modi', () => {
     const res = await build();
     expect(res.parts.map((p) => p.name)).toEqual(['Wijzerplaat', 'Uurwijzer', 'Minutenwijzer', 'Secondewijzer']);
     const rows = res.info.flatMap((b) => (b.kind === 'kv' ? b.rows : []));
-    expect(rows.find(([k]) => k === 'Schroefdraad uurwerk')?.[1]).toMatch(/6,5 mm/);
+    expect(rows.find(([k]) => k === 'Schroefdraad uurwerk')?.[1]).toMatch(/5,5 mm/);
     expect(rows.find(([k]) => k === 'Gat uurwijzer')?.[1]).toBe('Ø 5,5 mm');
     // hands print flat
     for (const name of ['Uurwijzer', 'Minutenwijzer']) expect(part(res, name).size[2]).toBeCloseTo(1.6, 3);
