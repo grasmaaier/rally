@@ -1,11 +1,16 @@
 import { strToU8, zipSync } from 'fflate';
 import type { MeshData, PrinterProfile } from './types';
+import { plateCenter } from './printer';
 
 export interface ExportObject {
   name: string;
   mesh: MeshData;
   /** One entry per copy: column-major 4x4 transforms into plate coordinates (origin = plate centre). */
   transforms: number[][];
+  /** Filament colour shown by 3MF viewers ('#rrggbb' or '#rrggbbaa'). */
+  color?: string;
+  /** Name of that colour/material, e.g. "PLA Basic Jadewit". */
+  material?: string;
 }
 
 function fmt(v: number) {
@@ -18,7 +23,11 @@ function escapeXml(s: string) {
   return s.replace(/[<>&"']/g, (c) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;', "'": '&apos;' })[c]!);
 }
 
-/** 3MF (core spec) that Bambu Studio, OrcaSlicer and PrusaSlicer open directly. */
+/**
+ * 3MF (core spec) that Bambu Studio, OrcaSlicer and PrusaSlicer open directly.
+ * Object colours are written as core-spec base materials (displaycolor): 3MF
+ * viewers show them; slicers keep their own filament assignment.
+ */
 export function build3MF(objects: ExportObject[], printer: PrinterProfile, title: string): Uint8Array {
   const parts: string[] = [];
   parts.push(
@@ -28,8 +37,25 @@ export function build3MF(objects: ExportObject[], printer: PrinterProfile, title
     '<metadata name="Application">Rally Printstudio</metadata>\n',
     '<resources>\n',
   );
+  // one base material per distinct colour, declared before the objects that use it
+  const matId = objects.length + 1;
+  const mats: { color: string; name: string }[] = [];
+  const matIndex = objects.map((o) => {
+    if (!o.color) return -1;
+    const color = displayColor(o.color);
+    const name = o.material ?? color;
+    let k = mats.findIndex((m) => m.color === color && m.name === name);
+    if (k < 0) k = mats.push({ color, name }) - 1;
+    return k;
+  });
+  if (mats.length) {
+    parts.push(`<basematerials id="${matId}">\n`);
+    for (const m of mats) parts.push(`<base name="${escapeXml(m.name)}" displaycolor="${m.color}"/>\n`);
+    parts.push('</basematerials>\n');
+  }
   objects.forEach((o, i) => {
-    parts.push(`<object id="${i + 1}" name="${escapeXml(o.name)}" type="model"><mesh><vertices>\n`);
+    const mat = matIndex[i] >= 0 ? ` pid="${matId}" pindex="${matIndex[i]}"` : '';
+    parts.push(`<object id="${i + 1}" name="${escapeXml(o.name)}" type="model"${mat}><mesh><vertices>\n`);
     const p = o.mesh.positions;
     const chunk: string[] = [];
     for (let v = 0; v < p.length; v += 3) chunk.push(`<vertex x="${fmt(p[v])}" y="${fmt(p[v + 1])}" z="${fmt(p[v + 2])}"/>`);
@@ -40,8 +66,7 @@ export function build3MF(objects: ExportObject[], printer: PrinterProfile, title
     parts.push(tri.join('\n'), '\n</triangles></mesh></object>\n');
   });
   parts.push('</resources>\n<build>\n');
-  const cx = printer.x / 2;
-  const cy = printer.y / 2;
+  const [cx, cy] = plateCenter(printer);
   objects.forEach((o, i) => {
     for (const m of o.transforms) {
       const tr = [m[0], m[1], m[2], m[4], m[5], m[6], m[8], m[9], m[10], m[12] + cx, m[13] + cy, m[14]];
@@ -67,6 +92,14 @@ export function build3MF(objects: ExportObject[], printer: PrinterProfile, title
     },
     { level: 6 },
   );
+}
+
+/** '#rgb'/'#rrggbb'/'#rrggbbaa' → '#RRGGBBAA' as the 3MF spec wants it. */
+function displayColor(hex: string): string {
+  let h = hex.replace('#', '').toUpperCase();
+  if (h.length === 3) h = h.split('').map((c) => c + c).join('');
+  if (!/^[0-9A-F]{6}([0-9A-F]{2})?$/.test(h)) return '#FFFFFFFF';
+  return `#${h.length === 6 ? `${h}FF` : h}`;
 }
 
 /** Binary STL of all copies merged into one file. */

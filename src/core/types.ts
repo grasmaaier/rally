@@ -70,13 +70,41 @@ export interface Preset {
   values: Partial<Params>;
 }
 
+/** Multi-material units a printer can use (Bambu Lab AMS family). */
+export interface AmsSupport {
+  /** Units that can be connected, e.g. 'AMS lite', 'AMS 2 Pro', 'AMS HT'. */
+  units: string[];
+  /** Filament slots most buyers have: the combo kit (4), 0 without one. */
+  typicalSlots: number;
+  /** Most slots with every supported unit connected. */
+  maxSlots: number;
+  /** The standard combo uses the AMS lite (open, no drying; limits on CF and TPU). */
+  lite: boolean;
+  note?: string;
+}
+
 export interface PrinterProfile {
   id: string;
   name: string;
-  /** Build volume in mm. */
+  /** Usable build volume in mm (for this nozzle mode). */
   x: number;
   y: number;
   z: number;
+  /** Product series, used to group the printer selector. */
+  series?: string;
+  /** Number of nozzles used in this profile (2 = both nozzles of a dual-nozzle printer). */
+  nozzles?: 1 | 2;
+  /** Enclosed build chamber (needed for ABS/ASA/PC/PA). */
+  enclosed?: boolean;
+  ams?: AmsSupport;
+  /** No longer manufactured (still in use, so still selectable). */
+  discontinued?: boolean;
+  /**
+   * Plate centre used for the 3MF (mm, slicer bed coordinates) when it is not
+   * the centre of the usable area, e.g. the area both nozzles reach.
+   */
+  center?: [number, number];
+  note?: string;
 }
 
 /**
@@ -132,7 +160,13 @@ export interface PartOut {
   color?: string;
   /** 'vase' = printed in spiral vase mode (single wall) for the filament estimate. */
   estimate?: 'solid' | 'vase';
+  /** Suggested filament line id from src/core/filaments.ts (e.g. 'petg-translucent' for a lamp shade). */
+  material?: string;
+  /** What the part is for, so the filament choice can be checked (heat near a bulb, outdoors, flexible). */
+  purpose?: PartPurpose;
 }
+
+export type PartPurpose = 'lamp' | 'outdoor' | 'flexible';
 
 /** Display-only items for the assembled view (wood boards, ghost outlines, placed parts). */
 export type SceneItem =
@@ -202,6 +236,8 @@ export interface PartResult {
   area: number;
   estimate: 'solid' | 'vase';
   triangles: number;
+  material?: string;
+  purpose?: PartPurpose;
 }
 
 export type SceneResult =
