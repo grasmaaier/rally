@@ -335,7 +335,7 @@ function armOf(p: Params, T: number): Arm {
   const tip = num(p, 'whTip');
   const pieces: Piece[] = [];
   // gusset where the arm leaves the plate: carries the bending into the plate
-  const gusset = (y: number, g: number): Piece => ({ kind: 'caps', c: [[T - 0.5, y - r0 - g, 0.4], [T - 0.5, y + r0 + g, 0.4], [T + g, y, r0]] });
+  const gusset = (y: number, g: number): Piece => ({ kind: 'caps', c: [[T - 1.2, y - r0 - g, 1.2], [T - 1.2, y + r0 + g, 1.2], [T + g, y, r0]] });
   const fromPath = (path: [number, number, number][]) => {
     pieces.push(...stroke(path));
     let yMin = Infinity, yMax = -Infinity, xMax = -Infinity;
