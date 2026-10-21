@@ -1058,7 +1058,7 @@ function build(p: Params, { M, printer }: Parameters<ToolDef['build']>[1]): Buil
     checkFit(pc.name, 2 * maxO, printH);
     const solid = shellSolid(M, pc);
     const idx = parts.length;
-    parts.push({ name: pc.name, solid, color: pc.color });
+    parts.push({ name: pc.name, solid, color: pc.color, material: 'petg-translucent', purpose: 'lamp' });
     scene.push({ kind: 'part', part: idx, matrix: placeMatrix(pc) });
     pc.partIndex = idx;
     masses.push({ m: grams(solid), z: pc.z0 + pc.h / 2 });
