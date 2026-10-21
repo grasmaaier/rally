@@ -4,7 +4,7 @@ import { keep } from '../core/registry';
 import { fitsOn, usable } from '../core/printer';
 import type { AssetRef, BuildOutput, InfoBlock, Params, PartOut, PrinterProfile, SceneItem, ToolDef } from '../core/types';
 import { UserError, bool, num, str } from '../core/types';
-import { countersunk, deg, filletExtrude, roundedRect, teardrop } from '../geom/helpers';
+import { countersunk, deg, filletExtrude, identity, mul, rotZ, roundedRect, teardrop, translation } from '../geom/helpers';
 import { sizeForHeight, textCross } from '../geom/text';
 
 // ---------------------------------------------------------------------------
@@ -120,22 +120,23 @@ function engraveBed(M: ManifoldToplevel, solid: Manifold, marks: { cs: CrossSect
 
 /**
  * Make sure a part fits the selected printer. Flat parts that are too long
- * are turned in the plane of the bed (diagonal) before giving up.
+ * are turned in the plane of the bed (diagonal) before giving up. Returns the
+ * placed solid and the turn in degrees about Z.
  */
-function fit(ctx: Ctx, solid: Manifold, name: string): Manifold {
+function fitTurned(ctx: Ctx, solid: Manifold, name: string): [Manifold, number] {
   const size = (m: Manifold): [number, number, number] => {
     const b = m.boundingBox();
     return [b.max[0] - b.min[0], b.max[1] - b.min[1], b.max[2] - b.min[2]];
   };
   const s0 = size(solid);
-  if (fitsOn(ctx.printer, s0)) return solid;
+  if (fitsOn(ctx.printer, s0)) return [solid, 0];
   const u = usable(ctx.printer);
   if (s0[2] <= u.z) {
     for (let a = 5; a < 90; a += 5) {
       const r = solid.rotate([0, 0, a]);
       if (fitsOn(ctx.printer, size(r))) {
         ctx.tips.push(`${name} ligt ${a}° gedraaid op het bed om op de ${ctx.printer.name} te passen.`);
-        return r;
+        return [r, a];
       }
     }
   }
@@ -143,6 +144,8 @@ function fit(ctx: Ctx, solid: Manifold, name: string): Manifold {
     `${name} (${Math.round(s0[0])} × ${Math.round(s0[1])} × ${Math.round(s0[2])} mm) past niet op het printbed van de ${ctx.printer.name}. Maak hem kleiner.`,
   );
 }
+
+const fit = (ctx: Ctx, solid: Manifold, name: string) => fitTurned(ctx, solid, name)[0];
 
 const strongTip = 'Sterk printen: PETG of PLA, 4 wanden, 30–40% infill (gyroid). Gebruik een goed afgesteld bed: de randen zijn je referentie.';
 const accuracyTip = 'Maatvast: controleer na het printen met een schuifmaat of winkelhaak. Zet "elephant foot"-compensatie aan (0,15 mm) zodat de onderrand niet uitloopt.';
@@ -319,7 +322,8 @@ function buildChamfer(ctx: Ctx): BuildOutput {
 
 export function centerRoundLayout(p: Params) {
   const R = num(p, 'crMax') / 2;
-  const w = 5;
+  // the open arm is a cantilever: make it stiffer for large stock
+  const w = Math.min(9, Math.max(5, 3 + 0.06 * R));
   const A = R + 12;
   const Yb = R * (1 + SQRT2) + 10;
   return { R, w, A, Yb, t: num(p, 'crThick'), hf: num(p, 'crFence'), blade: 14 };
@@ -479,24 +483,24 @@ function buildPushBlock(ctx: Ctx): BuildOutput {
   const tenon = rect(M, -B.Lt / 2, -B.tenonH, B.Lt / 2, 0.01);
   let handle = filletExtrude(M, M.CrossSection.union([outer.subtract(grip), tenon]), B.tf, 0, 2.5);
   for (const x of xs) handle = handle.subtract(tearAlongY(M, 1.5, 11 + 1).translate([x, -B.tenonH + 11, B.tf / 2]));
-  const parts: PartOut[] = [
-    { name: 'Duwblok', solid: fit(ctx, body, 'Duwblok') },
-    { name: 'Handgreep', solid: fit(ctx, handle, 'Handgreep') },
-  ];
-  const scene: SceneItem[] = [
-    { kind: 'part', part: 0, matrix: [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1] },
-    { kind: 'part', part: 1, matrix: [1, 0, 0, 0, 0, 0, 1, 0, 0, -1, 0, 0, 0, B.tf / 2, B.hB, 1] },
-  ];
+  const parts: PartOut[] = [];
+  const scene: SceneItem[] = [];
+  // place a part on the bed; its scene matrix maps the unturned part into the assembly
+  const add = (part: PartOut, label: string, matrix: number[]) => {
+    const [solid, turn] = fitTurned(ctx, part.solid, label);
+    parts.push({ ...part, solid });
+    scene.push({ kind: 'part', part: parts.length - 1, matrix: turn ? mul(matrix, rotZ(-turn)) : matrix });
+  };
+  add({ name: 'Duwblok', solid: body }, 'Duwblok', identity());
+  add({ name: 'Handgreep', solid: handle }, 'Handgreep', [1, 0, 0, 0, 0, 0, 1, 0, 0, -1, 0, 0, 0, B.tf / 2, B.hB, 1]);
   if (B.heel) {
     const yLow = -B.heelH - (B.pad ? B.padT : 0);
     let heel = rect(M, -B.W / 2, yLow, B.W / 2, B.hB).extrude(B.th);
     for (const y of [-B.W / 4, B.W / 4]) heel = heel.subtract(countersunk(M, 4.4, 8.8, B.th + 1).mirror([0, 0, 1]).translate([y, B.hB / 2, B.th]));
-    parts.push({ name: 'Hak (vervangbaar)', solid: fit(ctx, heel, 'Hak') });
-    scene.push({ kind: 'part', part: parts.length - 1, matrix: [0, -1, 0, 0, 0, 0, 1, 0, -1, 0, 0, 0, -B.L / 2, 0, 0, 1] });
+    add({ name: 'Hak (vervangbaar)', solid: heel }, 'Hak', [0, -1, 0, 0, 0, 0, 1, 0, -1, 0, 0, 0, -B.L / 2, 0, 0, 1]);
   }
   if (B.pad) {
-    parts.push({ name: 'Antislipzool (TPU)', solid: fit(ctx, roundedRect(M, B.L, B.W, 6).extrude(B.padT), 'Antislipzool'), color: '#3a3a3a' });
-    scene.push({ kind: 'part', part: parts.length - 1, matrix: [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, -B.padT, 1] });
+    add({ name: 'Antislipzool (TPU)', solid: roundedRect(M, B.L, B.W, 6).extrude(B.padT), color: '#3a3a3a' }, 'Antislipzool', translation(0, 0, -B.padT - 0.01));
   }
   ctx.tips.push(
     'De handgreep wordt plat geprint (lagen in de belastingsrichting) en in de sleuf van het blok gelijmd en van onderen vastgeschroefd met twee verzonken schroeven 4 × 20 mm.',

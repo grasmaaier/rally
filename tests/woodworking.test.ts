@@ -1,7 +1,7 @@
 import { beforeAll, describe, expect, it } from 'vitest';
 import type { Manifold, ManifoldToplevel } from 'manifold-3d';
 import { initManifold } from '../src/core/manifold';
-import { collect } from '../src/core/registry';
+import { collect, keep } from '../src/core/registry';
 import { DEFAULT_PRINTER, PRINTERS, fitsOn } from '../src/core/printer';
 import { defaultsOf, type PartResult, type Params } from '../src/core/types';
 import {
@@ -400,5 +400,19 @@ describe('houtbewerking', () => {
     const res = await buildTool(M, tool, params({ kind: 'pushBlock', pbHeel: 'screw', pbPad: true, pbHeelH: 6 }));
     expect(res.parts.map((p) => p.name)).toEqual(['Duwblok', 'Handgreep', 'Hak (vervangbaar)', 'Antislipzool (TPU)']);
     expect(res.scene).toHaveLength(4);
+  });
+
+  it('duwblok: ook gedraaid op een klein bed klopt de samengestelde weergave', async () => {
+    const mini = PRINTERS.find((p) => p.id === 'a1mini')!;
+    const res = await buildTool(M, tool, params({ kind: 'pushBlock', pbLen: 180, pbWidth: 50 }), mini);
+    expect(res.tips.some((t) => t.includes('gedraaid'))).toBe(true);
+    const s = res.scene![0];
+    if (s.kind !== 'part') throw new Error('part expected');
+    const body = keep(new M.Manifold(new M.Mesh({ numProp: 3, vertProperties: res.parts[0].mesh.positions, triVerts: res.parts[0].mesh.indices })));
+    const b = body.transform(s.matrix as never).boundingBox();
+    expect(b.max[0] - b.min[0]).toBeCloseTo(180, 3);
+    expect(b.max[1] - b.min[1]).toBeCloseTo(50, 3);
+    expect(b.min[2]).toBeCloseTo(0, 1);
+    collect();
   });
 });
