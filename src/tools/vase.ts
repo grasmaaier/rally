@@ -278,7 +278,7 @@ function build(p: Params, { M, printer, assets }: Parameters<ToolDef['build']>[1
   if (footprint > Math.min(printer.x, printer.y) - 10) warnings.push(`Te breed voor de ${printer.name}.`);
 
   return {
-    parts: [{ name: mode === 'lamp' ? 'Lampenkap' : 'Vaas', solid, estimate: mode === 'vase' ? 'vase' : 'solid' }],
+    parts: [{ name: mode === 'lamp' ? 'Lampenkap' : 'Vaas', solid, estimate: mode === 'vase' ? 'vase' : 'solid', ...(mode === 'lamp' ? { material: 'petg-translucent', purpose: 'lamp' as const } : {}) }],
     info,
     tips,
     warnings,

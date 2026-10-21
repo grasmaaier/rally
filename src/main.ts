@@ -1,11 +1,26 @@
 import './styles.css';
 import { TOOLS, TOOL_MAP } from './tools';
 import { defaultsOf, type BuildResult, type FileParam, type MeshAsset, type Params, type ParamValue, type PartResult, type PrinterProfile, type ShapeAsset, type ToolDef } from './core/types';
-import { DEFAULT_PRINTER, PRINTERS, fitsOn } from './core/printer';
+import { PRINTERS, fitsOn, printerById, volumeLabel } from './core/printer';
+import {
+  DEFAULT_FILAMENT,
+  FILAMENTS,
+  FILAMENT_MAP,
+  estimateGrams,
+  gramsToMetres,
+  isTranslucent,
+  nearestColor,
+  resolveFilament,
+  shoppingList,
+  shoppingText,
+  type FilamentChoice,
+  type ResolvedFilament,
+  type ShoppingList,
+} from './core/filaments';
 import { GeometryClient } from './core/client';
 import { arrange, plateOffset } from './core/layout';
 import { build3MF, buildSTL, download, slug, type ExportObject } from './core/export';
-import { Viewer, type ViewMode } from './ui/viewer';
+import { Viewer, type PartLook, type ViewMode } from './ui/viewer';
 import { buildForm, type FileHooks, type FormHandle } from './ui/form';
 import { svgToShape } from './ui/svg';
 import { parseMeshFile } from './geom/meshfile';
@@ -29,16 +44,28 @@ const store = {
   },
 };
 
-const COLORS = [
-  { name: 'Ivoor', hex: '#e8e4dc' },
-  { name: 'Zwart', hex: '#2b2b2e' },
-  { name: 'Grijs', hex: '#9aa0a6' },
-  { name: 'Terracotta', hex: '#c8693f' },
-  { name: 'Salie', hex: '#8fae8b' },
-  { name: 'Oceaan', hex: '#3f7cac' },
-  { name: 'Oker', hex: '#d9a441' },
-  { name: 'Roze', hex: '#e7a3b0' },
-];
+function readJson<T>(key: string): T | null {
+  try {
+    const raw = store.get(key);
+    return raw ? (JSON.parse(raw) as T) : null;
+  } catch {
+    return null;
+  }
+}
+
+function resolveChoice(c: Partial<FilamentChoice>): FilamentChoice {
+  const r = resolveFilament(c);
+  return { line: r.line.id, color: r.color.code };
+}
+
+/** The filament for "all parts": the saved choice, else the old preview colour mapped onto PLA Basic. */
+function initialFilament(): FilamentChoice {
+  const saved = readJson<FilamentChoice>('filament:all');
+  if (saved && typeof saved === 'object' && FILAMENT_MAP[saved.line]) return resolveChoice(saved);
+  const oldHex = store.get('color');
+  const color = oldHex && /^#[0-9a-f]{6}$/i.test(oldHex) ? nearestColor(DEFAULT_FILAMENT, oldHex) : DEFAULT_FILAMENT.colors[0];
+  return { line: DEFAULT_FILAMENT.id, color: color.code };
+}
 
 interface State {
   tool: ToolDef;
@@ -46,7 +73,10 @@ interface State {
   printer: PrinterProfile;
   view: ViewMode;
   section: boolean;
-  color: string;
+  /** Filament for every part without a choice of its own. */
+  filament: FilamentChoice;
+  /** Per-part filament choices for the current tool, by part name. */
+  partFilament: Record<string, FilamentChoice>;
   result: BuildResult | null;
 }
 
@@ -56,10 +86,11 @@ const viewer = new Viewer($('#viewer'));
 const state: State = {
   tool: TOOLS[0],
   params: defaultsOf(TOOLS[0].params),
-  printer: PRINTERS.find((p) => p.id === store.get('printer')) ?? DEFAULT_PRINTER,
+  printer: printerById(store.get('printer')),
   view: 'assembly',
   section: false,
-  color: store.get('color') ?? COLORS[0].hex,
+  filament: initialFilament(),
+  partFilament: {},
   result: null,
 };
 
@@ -170,14 +201,42 @@ function showError(msg: string | null) {
 
 const fmt = (v: number, d = 0) => v.toLocaleString('nl-NL', { maximumFractionDigits: d, minimumFractionDigits: d });
 
+// ---------------------------------------------------------------------------
+// Filament per part
+
+type FilamentSource = 'part' | 'hint' | 'all';
+
 /**
- * Rough filament estimate in grams (PLA 1.24 g/cm³): 2 walls (~0.84 mm shell)
- * plus 15% infill, or a single ~0.45 mm wall for spiral vase mode.
+ * Filament of a part: the user's choice for that part, else the tool's
+ * suggestion (material line and, for designs with differently coloured parts,
+ * the nearest real colour), else the "all parts" filament.
  */
-function grams(p: PartResult) {
-  if (p.estimate === 'vase') return (p.area * 0.45 * 1.24) / 1000;
-  const shell = Math.min(p.volume, p.area * 0.84);
-  return ((shell + (p.volume - shell) * 0.15) * 1.24) / 1000;
+function filamentOf(p: PartResult, parts: PartResult[]): { f: ResolvedFilament; source: FilamentSource } {
+  const own = state.partFilament[p.name];
+  if (own) return { f: resolveFilament(own), source: 'part' };
+  const all = resolveFilament(state.filament);
+  const hinted = p.material ? FILAMENT_MAP[p.material] : undefined;
+  const line = hinted ?? all.line;
+  // part colours matter only when the design mixes colours (e.g. lamp segments)
+  const mixed = !!p.color && new Set(parts.map((q) => q.color ?? '')).size > 1;
+  const color = mixed ? nearestColor(line, p.color!) : line === all.line ? all.color : nearestColor(line, all.color.hex);
+  return { f: { line, color }, source: hinted || mixed ? 'hint' : 'all' };
+}
+
+function lookOf(f: ResolvedFilament): PartLook {
+  return { color: f.color.hex, translucent: isTranslucent(f), clear: !!f.color.clear };
+}
+
+function currentList(): ShoppingList | null {
+  const res = state.result;
+  if (!res) return null;
+  return shoppingList(
+    res.parts.map((p) => {
+      const { f } = filamentOf(p, res.parts);
+      return { name: p.name, quantity: p.quantity, grams: estimateGrams(p, f.line.density), filament: f, purpose: p.purpose, estimate: p.estimate };
+    }),
+    state.printer,
+  );
 }
 
 function render() {
@@ -188,22 +247,13 @@ function render() {
   const placements = arrange(res.parts, state.printer, true);
   const plates = Math.max(1, ...placements.map((p) => p.plate + 1));
   viewer.setSection(state.section);
-  viewer.show(res, mode, state.printer, placements, `${state.tool.id}|${mode}|${state.printer.id}|${plates}`);
-  viewer.setColor(state.color);
+  const looks = res.parts.map((p) => lookOf(filamentOf(p, res.parts).f));
+  viewer.show(res, mode, state.printer, placements, `${state.tool.id}|${mode}|${state.printer.id}|${plates}`, looks);
 
   $('#view-toggle').hidden = !hasScene;
   for (const b of document.querySelectorAll<HTMLButtonElement>('#view-toggle button')) b.setAttribute('aria-pressed', String(b.dataset.view === mode));
 
-  // stats strip
   const total = res.parts.reduce((s, p) => s + p.quantity, 0);
-  const g = res.parts.reduce((s, p) => s + grams(p) * p.quantity, 0);
-  const allFit = res.parts.every((p) => fitsOn(state.printer, p.size));
-  const main = res.parts[0];
-  $('#stats').innerHTML = `
-    <span class="chip ${allFit ? 'ok' : 'bad'}">${allFit ? '✓ Past op' : '✕ Te groot voor'} ${state.printer.name}</span>
-    ${res.parts.length === 1 ? `<span class="chip">${main.size.map((v) => fmt(v, 1)).join(' × ')} mm</span>` : `<span class="chip">${total} printdelen · ${plates} ${plates === 1 ? 'plaat' : 'platen'}</span>`}
-    <span class="chip">≈ ${fmt(g)} g filament</span>
-    <span class="chip subtle">${fmt(res.ms)} ms</span>`;
 
   // parts list
   const parts = $('#parts');
@@ -215,8 +265,9 @@ function render() {
     row.innerHTML = `
       <div class="part-main">
         <strong>${p.quantity > 1 ? `${p.quantity}× ` : ''}${escapeHtml(p.name)}</strong>
-        <span>${p.size.map((v) => fmt(v, 1)).join(' × ')} mm · ≈ ${fmt(grams(p))} g${p.quantity > 1 ? ' per stuk' : ''}</span>
-        ${fits ? '' : '<span class="bad">Past niet op het bed</span>'}
+        <span>${p.size.map((v) => fmt(v, 1)).join(' × ')} mm</span>
+        <span class="part-fil" data-part="${i}"></span>
+        ${fits ? '' : `<span class="bad">Past niet op de ${escapeHtml(state.printer.name)}</span>`}
       </div>`;
     const btn = document.createElement('button');
     btn.className = 'ghost small';
@@ -278,6 +329,179 @@ function render() {
     info.append(sec);
   }
   $('#tips').innerHTML = res.tips.length ? `<h3>Printtips</h3><ul>${res.tips.map((t) => `<li>${escapeHtml(t)}</li>`).join('')}</ul>` : '';
+  renderFilament(plates);
+}
+
+let lastPlates = 1;
+
+/** Everything that depends on the filament choice; cheap, so it runs on every colour change. */
+function renderFilament(plates = lastPlates) {
+  const res = state.result;
+  if (!res) return;
+  lastPlates = plates;
+  const fils = res.parts.map((p) => filamentOf(p, res.parts));
+  viewer.setLooks(fils.map(({ f }) => lookOf(f)));
+  const list = currentList()!;
+
+  // stats strip
+  const total = res.parts.reduce((s, p) => s + p.quantity, 0);
+  const allFit = res.parts.every((p) => fitsOn(state.printer, p.size));
+  const main = res.parts[0];
+  $('#stats').innerHTML = `
+    <span class="chip ${allFit ? 'ok' : 'bad'}">${allFit ? '✓ Past op' : '✕ Te groot voor'} ${escapeHtml(state.printer.name)}</span>
+    ${res.parts.length === 1 ? `<span class="chip">${main.size.map((v) => fmt(v, 1)).join(' × ')} mm</span>` : `<span class="chip">${total} printdelen · ${plates} ${plates === 1 ? 'plaat' : 'platen'}</span>`}
+    <span class="chip" title="Schatting: 2 wanden + 15% vulling (vase mode: 1 wand)">≈ ${fmt(list.totalGrams)} g filament</span>
+    <span class="chip subtle">${fmt(res.ms)} ms</span>`;
+
+  // filament per part in the parts list
+  for (const el of document.querySelectorAll<HTMLElement>('#parts .part-fil')) {
+    const i = Number(el.dataset.part);
+    const p = res.parts[i];
+    const { f } = fils[i];
+    const g = estimateGrams(p, f.line.density);
+    el.innerHTML = `${dot(f)}${escapeHtml(f.line.name)} ${escapeHtml(f.color.name)} · ≈ ${fmt(g)} g / ${fmt(gramsToMetres(g, f.line.density), 1)} m${p.quantity > 1 ? ' per stuk' : ''}`;
+  }
+
+  renderFilamentPanel(res.parts, fils);
+  renderShopping(list);
+  // designs that colour every part themselves ignore the quick colour picks
+  $('#swatches').hidden = res.parts.length > 1 && fils.every((x) => x.source !== 'all');
+  renderSwatches();
+}
+
+function dot(f: ResolvedFilament, extra = '') {
+  return `<i class="dot${extra}${isTranslucent(f) ? ' see' : ''}" style="--c:${f.color.hex}" aria-hidden="true"></i>`;
+}
+
+function lineOptions(selected: string) {
+  const fams = [...new Set(FILAMENTS.map((f) => f.family))];
+  return fams
+    .map(
+      (fam) =>
+        `<optgroup label="${fam}">${FILAMENTS.filter((f) => f.family === fam)
+          .map((f) => `<option value="${f.id}"${f.id === selected ? ' selected' : ''}>${escapeHtml(f.name)}${f.translucent ? ' (doorschijnend)' : ''}</option>`)
+          .join('')}</optgroup>`,
+    )
+    .join('');
+}
+
+function colorOptions(f: ResolvedFilament) {
+  return f.line.colors
+    .map((k) => `<option value="${k.code}"${k.code === f.color.code ? ' selected' : ''}>${escapeHtml(k.name)}${k.clear ? ' (helder)' : k.translucent && !f.line.translucent ? ' (doorschijnend)' : ''}</option>`)
+    .join('');
+}
+
+function setPartFilament(name: string, choice: FilamentChoice | null) {
+  if (choice) state.partFilament[name] = choice;
+  else delete state.partFilament[name];
+  store.set(`filament:parts:${state.tool.id}`, JSON.stringify(state.partFilament));
+  renderFilament();
+}
+
+function setAllFilament(choice: FilamentChoice) {
+  state.filament = resolveChoice(choice);
+  store.set('filament:all', JSON.stringify(state.filament));
+  renderFilament();
+}
+
+function renderFilamentPanel(parts: PartResult[], fils: { f: ResolvedFilament; source: FilamentSource }[]) {
+  const box = $('#filament');
+  const all = resolveFilament(state.filament);
+  const ams = state.printer.ams;
+  const rows: string[] = [];
+  rows.push(`
+    <div class="fil-row fil-all">
+      <span class="fil-name">${parts.length > 1 ? 'Alle onderdelen' : 'Filament'}</span>
+      ${dot(all, ' big')}
+      <select data-role="all-line" aria-label="Filamentsoort voor alle onderdelen">${lineOptions(all.line.id)}</select>
+      <select data-role="all-color" aria-label="Kleur voor alle onderdelen">${colorOptions(all)}</select>
+    </div>
+    <p class="fil-use">${escapeHtml(all.line.uses)}</p>
+    ${parts.length > 1 && fils.every((x) => x.source !== 'all') ? '<p class="fil-use">Dit ontwerp kiest zelf een kleur per onderdeel (de dichtstbijzijnde echte filamentkleur); hier kies je de filamentsoort, per onderdeel ook een andere kleur.</p>' : ''}`);
+  if (parts.length > 1) {
+    parts.forEach((p, i) => {
+      const { f, source } = fils[i];
+      const tag = source === 'hint' ? 'suggestie' : source === 'all' ? 'zoals alle' : 'eigen keus';
+      rows.push(`
+        <div class="fil-row" data-part="${i}">
+          <span class="fil-name" title="${escapeHtml(p.name)}">${p.quantity > 1 ? `${p.quantity}× ` : ''}${escapeHtml(p.name)} <em>${tag}</em></span>
+          ${dot(f)}
+          <select data-role="line" aria-label="Filamentsoort voor ${escapeHtml(p.name)}">${lineOptions(f.line.id)}</select>
+          <select data-role="color" aria-label="Kleur voor ${escapeHtml(p.name)}">${colorOptions(f)}</select>
+          ${source === 'part' ? '<button type="button" class="ghost small" data-role="reset" title="Eigen keus wissen">↺</button>' : ''}
+        </div>`);
+    });
+  }
+  rows.push(`<p class="fil-printer">${escapeHtml(state.printer.name)} · ${volumeLabel(state.printer)} mm${ams ? ` · ${escapeHtml(ams.units.join(' / '))}, max. ${ams.maxSlots} kleuren` : ''}</p>`);
+  box.innerHTML = rows.join('');
+
+  const allLine = box.querySelector<HTMLSelectElement>('[data-role="all-line"]')!;
+  allLine.addEventListener('change', () => {
+    const line = FILAMENT_MAP[allLine.value];
+    setAllFilament({ line: line.id, color: nearestColor(line, all.color.hex).code });
+  });
+  const allColor = box.querySelector<HTMLSelectElement>('[data-role="all-color"]')!;
+  allColor.addEventListener('change', () => setAllFilament({ line: all.line.id, color: allColor.value }));
+  for (const row of box.querySelectorAll<HTMLElement>('.fil-row[data-part]')) {
+    const i = Number(row.dataset.part);
+    const name = parts[i].name;
+    const cur = fils[i].f;
+    const lineSel = row.querySelector<HTMLSelectElement>('[data-role="line"]')!;
+    lineSel.addEventListener('change', () => {
+      const line = FILAMENT_MAP[lineSel.value];
+      setPartFilament(name, { line: line.id, color: nearestColor(line, cur.color.hex).code });
+    });
+    const colSel = row.querySelector<HTMLSelectElement>('[data-role="color"]')!;
+    colSel.addEventListener('change', () => setPartFilament(name, { line: cur.line.id, color: colSel.value }));
+    row.querySelector('[data-role="reset"]')?.addEventListener('click', () => setPartFilament(name, null));
+  }
+}
+
+function renderShopping(list: ShoppingList) {
+  const box = $('#shopping-list');
+  const spools = list.rows.reduce((s, r) => s + r.spools, 0);
+  const kg = (g: number) => `${fmt(g / 1000, g % 1000 ? 1 : 0)} kg`;
+  box.innerHTML = `
+    <div class="table-wrap"><table class="shop">
+      <thead><tr><th>Rol</th><th>Nodig</th><th>Koop</th><th>€</th></tr></thead>
+      <tbody>${list.rows
+        .map(
+          (r) => `<tr>
+            <td class="shop-name">${dot({ line: r.line, color: r.color })}<b>${escapeHtml(r.line.name)}</b> ${escapeHtml(r.color.name)} <span class="muted">${r.color.code}</span><br><span class="muted small">${escapeHtml(r.parts.join(', '))}</span></td>
+            <td>≈ ${fmt(r.grams)} g<br><span class="muted small">${fmt(r.metres)} m</span></td>
+            <td>${r.spools}× ${kg(r.line.spoolGrams)}<br><span class="muted small">${fmt(r.used * 100)}% gebruikt</span></td>
+            <td>${fmt(r.costEur, 2)}</td>
+          </tr>`,
+        )
+        .join('')}</tbody>
+      <tfoot><tr><th>Totaal</th><th>≈ ${fmt(list.totalGrams)} g</th><th>${spools} ${spools === 1 ? 'rol' : 'rollen'}</th><th>${fmt(list.totalCostEur, 2)}</th></tr></tfoot>
+    </table></div>
+    <p class="muted small">Prijzen indicatief (Bambu Lab EU-shop, rol met spoel); refills zijn een paar euro goedkoper. Gewicht geschat met 2 wanden + 15% vulling (vase mode: 1 wand).</p>
+    ${list.warnings.map((w) => `<div class="callout warn">${escapeHtml(w)}</div>`).join('')}
+    ${list.notes.length ? `<ul class="shop-notes">${list.notes.map((n) => `<li>${escapeHtml(n)}</li>`).join('')}</ul>` : ''}`;
+}
+
+/** Quick colour picks under the viewer: colours of the "all parts" filament line. */
+function renderSwatches() {
+  const swatches = $('#swatches');
+  const all = resolveFilament(state.filament);
+  const key = `${all.line.id}|${all.color.code}`;
+  if (swatches.dataset.key === key) return;
+  swatches.dataset.key = key;
+  swatches.innerHTML = '';
+  const shown = all.line.colors.slice(0, 10);
+  if (!shown.includes(all.color)) shown[shown.length - 1] = all.color;
+  for (const k of shown) {
+    const b = document.createElement('button');
+    b.className = `swatch${all.line.translucent || k.translucent ? ' see' : ''}`;
+    b.type = 'button';
+    b.style.setProperty('--c', k.hex);
+    b.title = `${all.line.name} ${k.name}`;
+    b.setAttribute('aria-label', `Kleur ${k.name}`);
+    b.setAttribute('aria-pressed', String(k.code === all.color.code));
+    b.addEventListener('click', () => setAllFilament({ line: all.line.id, color: k.code }));
+    swatches.append(b);
+  }
 }
 
 function escapeHtml(s: string) {
@@ -290,9 +514,14 @@ function escapeHtml(s: string) {
 function objectsFor(plate: number | null): ExportObject[] {
   const res = state.result!;
   const placements = arrange(res.parts, state.printer, true);
-  return res.parts.map((p, i) => ({
+  return res.parts.map((p, i) => {
+    const { f } = filamentOf(p, res.parts);
+    return {
     name: p.name,
     mesh: p.mesh,
+    // alpha hints at see-through filament for 3MF viewers
+    color: f.color.clear ? `${f.color.hex}40` : isTranslucent(f) ? `${f.color.hex}99` : f.color.hex,
+    material: `${f.line.name} ${f.color.name}`,
     transforms: placements
       .filter((pl) => pl.part === i && (plate === null || pl.plate === plate))
       .map((pl) => {
@@ -301,7 +530,8 @@ function objectsFor(plate: number | null): ExportObject[] {
         const s = pl.rotated ? 1 : 0;
         return [c, s, 0, 0, -s, c, 0, 0, 0, 0, 1, 0, x, pl.y, 0, 1];
       }),
-  })).filter((o) => o.transforms.length > 0);
+    };
+  }).filter((o) => o.transforms.length > 0);
 }
 
 function save(data: Uint8Array | string, filename: string, mime: string) {
@@ -467,6 +697,7 @@ function selectTool(tool: ToolDef, params?: Params) {
   state.params = params ?? { ...defaultsOf(tool.params), ...savedParams(tool) };
   state.result = null;
   state.view = 'assembly';
+  state.partFilament = loadPartFilament(tool.id);
   document.title = `${tool.name} · Rally Printstudio`;
   for (const b of document.querySelectorAll<HTMLButtonElement>('#tools button')) b.setAttribute('aria-current', String(b.dataset.tool === tool.id));
   $('#tool-title').textContent = tool.name;
@@ -478,6 +709,13 @@ function selectTool(tool: ToolDef, params?: Params) {
   persist();
   showError(null);
   scheduleBuild();
+}
+
+function loadPartFilament(toolId: string): Record<string, FilamentChoice> {
+  const saved = readJson<Record<string, FilamentChoice>>(`filament:parts:${toolId}`);
+  const out: Record<string, FilamentChoice> = {};
+  if (saved && typeof saved === 'object') for (const [k, v] of Object.entries(saved)) if (v && FILAMENT_MAP[v.line]) out[k] = resolveChoice(v);
+  return out;
 }
 
 function setupChrome() {
@@ -493,11 +731,23 @@ function setupChrome() {
     nav.append(b);
   }
   const printer = $<HTMLSelectElement>('#printer');
-  printer.innerHTML = PRINTERS.map((p) => `<option value="${p.id}">${p.name} (${p.x}×${p.y}×${p.z})</option>`).join('');
+  const series = [...new Set(PRINTERS.map((p) => p.series ?? 'Overig'))];
+  printer.innerHTML = series
+    .map(
+      (s) =>
+        `<optgroup label="${escapeHtml(s)}">${PRINTERS.filter((p) => (p.series ?? 'Overig') === s)
+          .map((p) => `<option value="${p.id}">${escapeHtml(p.name.replace(/^Bambu Lab /, ''))} · ${volumeLabel(p)} mm${p.discontinued ? ' · uit productie' : ''}</option>`)
+          .join('')}</optgroup>`,
+    )
+    .join('');
   printer.value = state.printer.id;
+  const printerTitle = () =>
+    (printer.title = `${state.printer.name}: ${volumeLabel(state.printer)} mm${state.printer.ams ? ` · ${state.printer.ams.units.join(' / ')}` : ''}${state.printer.note ? ` · ${state.printer.note}` : ''}`);
+  printerTitle();
   printer.addEventListener('change', () => {
-    state.printer = PRINTERS.find((p) => p.id === printer.value) ?? DEFAULT_PRINTER;
+    state.printer = printerById(printer.value);
     store.set('printer', state.printer.id);
+    printerTitle();
     scheduleBuild();
   });
 
@@ -548,22 +798,23 @@ function setupChrome() {
   });
   for (const b of document.querySelectorAll<HTMLButtonElement>('[data-cam]')) b.addEventListener('click', () => (b.dataset.cam === 'fit' ? viewer.fit() : viewer.view(b.dataset.cam as 'front' | 'top' | 'iso')));
 
-  const swatches = $('#swatches');
-  for (const c of COLORS) {
-    const b = document.createElement('button');
-    b.className = 'swatch';
-    b.style.setProperty('--c', c.hex);
-    b.title = c.name;
-    b.setAttribute('aria-label', `Kleur ${c.name}`);
-    b.setAttribute('aria-pressed', String(c.hex === state.color));
-    b.addEventListener('click', () => {
-      state.color = c.hex;
-      store.set('color', c.hex);
-      viewer.setColor(c.hex);
-      for (const s of swatches.querySelectorAll('button')) s.setAttribute('aria-pressed', String(s === b));
-    });
-    swatches.append(b);
-  }
+  $('#shop-copy').addEventListener('click', async () => {
+    const list = currentList();
+    if (!list) return;
+    const btn = $('#shop-copy');
+    try {
+      await navigator.clipboard.writeText(shoppingText(list, state.tool.name, state.printer));
+      btn.textContent = 'Gekopieerd ✓';
+    } catch {
+      btn.textContent = 'Kopiëren lukte niet';
+    }
+    setTimeout(() => (btn.textContent = 'Kopieer lijst'), 1800);
+  });
+  $('#shop-print').addEventListener('click', () => {
+    if (!currentList()) return;
+    $('#print-area').innerHTML = `<h1>Boodschappenlijst</h1><p>${escapeHtml(state.tool.name)} · ${escapeHtml(state.printer.name)}</p>${$('#shopping-list').innerHTML}`;
+    window.print();
+  });
 
   $('#export-3mf').addEventListener('click', () => export3MF(null));
   $('#export-stl').addEventListener('click', () => {

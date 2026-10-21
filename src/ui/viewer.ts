@@ -7,6 +7,14 @@ import { type Placement, plateOffset } from '../core/layout';
 
 export type ViewMode = 'plate' | 'assembly';
 
+/** How a printed part looks: the filament colour, and whether light shines through it. */
+export interface PartLook {
+  color: string;
+  translucent?: boolean;
+  /** Water-clear filament. */
+  clear?: boolean;
+}
+
 interface Theme {
   background: string;
   plate: string;
@@ -36,6 +44,8 @@ export class Viewer {
   private section = false;
   private color = '#e8e4dc';
   private lastFitKey = '';
+  private looks: (PartLook | undefined)[] = [];
+  private partColors: (string | undefined)[] = [];
 
   constructor(private host: HTMLElement) {
     this.renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
@@ -91,14 +101,26 @@ export class Viewer {
     this.needsRender = true;
   }
 
+  /** Default colour for parts without a look or colour of their own. */
   setColor(color: string) {
     this.color = color;
+    this.refreshLooks();
+  }
+
+  /** Per-part filament looks (index = part index); updates the materials in place. */
+  setLooks(looks: (PartLook | undefined)[]) {
+    this.looks = looks;
+    this.refreshLooks();
+  }
+
+  private lookOf(part: number): PartLook {
+    return this.looks[part] ?? { color: this.partColors[part] ?? this.color };
+  }
+
+  private refreshLooks() {
     this.content.traverse((o) => {
-      const m = (o as THREE.Mesh).material as THREE.MeshStandardMaterial | undefined;
-      // parts with their own colour (e.g. lamp segments) keep it
-      if (m && m.userData.filament && !m.userData.own) {
-        m.color.set(m.userData.back ? shade(color, 0.55) : color);
-      }
+      const m = (o as THREE.Mesh).material as THREE.MeshPhysicalMaterial | undefined;
+      if (m && m.userData.filament) applyLook(m, this.lookOf(m.userData.part as number), !!m.userData.back);
     });
     this.needsRender = true;
   }
@@ -143,26 +165,28 @@ export class Viewer {
     }
   }
 
-  private partMaterials(clip: THREE.Plane[] | null, own?: string) {
-    const color = own ?? this.color;
-    const front = new THREE.MeshStandardMaterial({ color, roughness: 0.5, metalness: 0.0, clippingPlanes: clip ?? [] });
+  private partMaterials(clip: THREE.Plane[] | null, part: number) {
+    const look = this.lookOf(part);
+    const front = new THREE.MeshPhysicalMaterial({ metalness: 0.0, clippingPlanes: clip ?? [] });
     front.userData.filament = true;
-    front.userData.own = !!own;
+    front.userData.part = part;
+    applyLook(front, look, false);
     if (!clip) return [front];
-    const back = new THREE.MeshStandardMaterial({ color: shade(color, 0.55), roughness: 0.9, side: THREE.BackSide, clippingPlanes: clip });
+    const back = new THREE.MeshPhysicalMaterial({ side: THREE.BackSide, clippingPlanes: clip });
     back.userData.filament = true;
     back.userData.back = true;
-    back.userData.own = !!own;
+    back.userData.part = part;
+    applyLook(back, look, true);
     return [front, back];
   }
 
-  private addPart(geom: THREE.BufferGeometry, matrix: THREE.Matrix4, clipAt: number | null, color?: string) {
+  private addPart(geom: THREE.BufferGeometry, matrix: THREE.Matrix4, clipAt: number | null, part: number) {
     let clip: THREE.Plane[] | null = null;
     if (this.section && clipAt !== null) {
       // cut along the depth: keep world y >= clipAt (the root group is Z-up = world Z-up here)
       clip = [new THREE.Plane(new THREE.Vector3(0, 1, 0), -clipAt)];
     }
-    for (const mat of this.partMaterials(clip, color)) {
+    for (const mat of this.partMaterials(clip, part)) {
       const mesh = new THREE.Mesh(geom, mat);
       mesh.matrixAutoUpdate = false;
       mesh.matrix.copy(matrix);
@@ -181,9 +205,11 @@ export class Viewer {
     this.content.add(new THREE.Mesh(geo, mat));
   }
 
-  show(result: BuildResult, mode: ViewMode, printer: PrinterProfile, placements: Placement[], fitKey: string) {
+  show(result: BuildResult, mode: ViewMode, printer: PrinterProfile, placements: Placement[], fitKey: string, looks?: (PartLook | undefined)[]) {
     this.clearContent();
     this.printer = printer;
+    this.partColors = result.parts.map((p) => p.color);
+    if (looks) this.looks = looks;
     const geoms = result.parts.map((p) => {
       const g = new THREE.BufferGeometry();
       g.setAttribute('position', new THREE.BufferAttribute(p.mesh.positions, 3));
@@ -201,7 +227,7 @@ export class Viewer {
       for (const pl of placements) {
         const m = new THREE.Matrix4().makeTranslation(pl.x + plateOffset(printer, pl.plate), pl.y, 0);
         if (pl.rotated) m.multiply(new THREE.Matrix4().makeRotationZ(Math.PI / 2));
-        this.addPart(geoms[pl.part], m, pl.y, result.parts[pl.part].color);
+        this.addPart(geoms[pl.part], m, pl.y, pl.part);
       }
     } else {
       this.plates.visible = false;
@@ -220,7 +246,7 @@ export class Viewer {
       const clip = this.section ? [new THREE.Plane(new THREE.Vector3(0, 1, 0), -cy)] : [];
       for (const s of result.scene) {
         if (s.kind === 'part') {
-          this.addPart(geoms[s.part], new THREE.Matrix4().fromArray(s.matrix), cy, result.parts[s.part].color);
+          this.addPart(geoms[s.part], new THREE.Matrix4().fromArray(s.matrix), cy, s.part);
         } else if (s.kind === 'mesh') {
           this.addGhostMesh(s.mesh, s.color);
         } else {
@@ -330,6 +356,30 @@ function flat(g: THREE.BufferGeometry) {
   const n = g.toNonIndexed();
   n.computeVertexNormals();
   return n;
+}
+
+/** Opaque filament is a satin plastic; translucent filament lets light through (transmission). */
+function applyLook(m: THREE.MeshPhysicalMaterial, look: PartLook, back: boolean) {
+  const see = !!(look.translucent || look.clear);
+  if (back) {
+    // the cut face in section view
+    m.color.set(shade(look.color, 0.55));
+    m.roughness = 0.9;
+    m.transmission = 0;
+    m.transparent = see;
+    m.opacity = see ? 0.75 : 1;
+  } else {
+    m.color.set(look.color);
+    m.roughness = see ? (look.clear ? 0.08 : 0.32) : 0.5;
+    m.transmission = see ? (look.clear ? 0.95 : 0.65) : 0;
+    m.thickness = see ? 1.2 : 0;
+    m.ior = 1.5;
+    m.attenuationColor.set(look.color);
+    m.attenuationDistance = look.clear ? 400 : 40;
+    m.transparent = false;
+    m.opacity = 1;
+  }
+  m.needsUpdate = true;
 }
 
 function shade(hex: string, k: number) {

@@ -43,6 +43,8 @@ export function runBuild(M: ManifoldToplevel, tool: ToolDef, params: Params, pri
         area: placed.surfaceArea(),
         estimate: p.estimate ?? 'solid',
         triangles: placed.numTri(),
+        material: p.material,
+        purpose: p.purpose,
       };
     });
     const scene: SceneResult[] | undefined = out.scene?.map((s) => {

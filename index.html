@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
     <title>Rally Printstudio</title>
-    <meta name="description" content="Parametrische 3D-printontwerpen voor de Bambu Lab A2L: vazen, lampenkappen, Gridfinity, grepen, verbinders, meubels en zelfwaterende plantenpotten." />
+    <meta name="description" content="Parametrische 3D-printontwerpen voor Bambu Lab-printers (standaard de A2L): vazen, lampenkappen, Gridfinity, grepen, verbinders, meubels en zelfwaterende plantenpotten." />
     <meta name="theme-color" content="#0f8a5f" />
     <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%230f8a5f'/%3E%3Cpath d='M9 23V9h8a4.5 4.5 0 0 1 0 9h-8M16 18l6 5' fill='none' stroke='white' stroke-width='2.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E" />
   </head>
@@ -18,8 +18,8 @@
         <nav class="tools" id="tools" aria-label="Gereedschap"></nav>
         <div class="top-actions">
           <label class="printer">
-            <span class="sr-only">Printer</span>
-            <select id="printer"></select>
+            <span class="printer-label">Printer</span>
+            <select id="printer" aria-label="Printer"></select>
           </label>
           <button id="theme" class="icon-btn" type="button" aria-label="Thema">☾</button>
         </div>
@@ -75,11 +75,26 @@
             <h3>Onderdelen</h3>
             <div id="parts"></div>
           </section>
+          <section class="info-block">
+            <h3>Filament</h3>
+            <div id="filament" class="filament"></div>
+          </section>
+          <section class="info-block shopping" id="shopping">
+            <div class="shop-head">
+              <h3>Boodschappenlijst</h3>
+              <div class="shop-actions">
+                <button id="shop-copy" class="ghost small" type="button">Kopieer lijst</button>
+                <button id="shop-print" class="ghost small" type="button">Print</button>
+              </div>
+            </div>
+            <div id="shopping-list"></div>
+          </section>
           <div id="info"></div>
           <div id="tips" class="tips"></div>
         </aside>
       </main>
     </div>
+    <div id="print-area" class="print-area" aria-hidden="true"></div>
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>
