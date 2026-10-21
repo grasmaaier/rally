@@ -863,7 +863,7 @@ function build(p: Params, { M, printer }: Parameters<ToolDef['build']>[1]): Buil
     }
     if (cut.length) solid = solid.subtract(M.Manifold.union(cut));
     const idx = parts.length;
-    parts.push({ name: pc.name, solid, color: pc.color });
+    parts.push({ name: pc.name, solid, color: pc.color, ...(pc.role === 'kap' || pc.role === 'lamel' ? { material: 'petg-translucent', purpose: 'lamp' as const } : {}) });
     scene.push({ kind: 'part', part: idx, matrix: placeMatrix(pc) });
     pc.partIndex = idx;
     masses.push({ m: grams(solid), z: pc.z0 + pc.h / 2 });
