@@ -695,7 +695,7 @@ function peg(M: ManifoldToplevel, p: Params): HookOut {
     tips.push(`De pin is ${D.toFixed(0)} mm dik gemaakt zodat de schroef erin past.`);
   }
   const L = num(p, 'whPegL');
-  const hs = num(p, 'whHeadScale') / 100;
+  let hs = num(p, 'whHeadScale') / 100;
   const S0 = pegSection(M, p, D);
   const R = maxRadius(S0);
   const fs = 1.45;
@@ -715,8 +715,13 @@ function peg(M: ManifoldToplevel, p: Params): HookOut {
   const Rf = maxRadius(flange);
   const zTaper = flangeT + Math.max(1.5, (Rf - R) * 0.6);
   const headH = Math.max(4, Math.min(L * 0.3, 12));
-  const flare = R * (hs - 1) + 0.4;
   const zHead = L - headH;
+  const room = zHead - zTaper - 3 - 0.4;
+  if (R * (hs - 1) > room && hs > 1) {
+    hs = Math.max(1, 1 + room / R);
+    tips.push(`De kop is ${Math.round(hs * 100)}% gemaakt: voor een grotere kop is de pin te kort.`);
+  }
+  const flare = R * (hs - 1) + 0.4;
   const zFlare = zHead - flare;
   if (zFlare < zTaper + 3) throw new UserError(`De pin is te kort voor deze kop: maak hem minstens ${Math.ceil(zTaper + 3 + flare + headH)} mm lang of de kop kleiner.`);
   const pieces: Manifold[] = [
