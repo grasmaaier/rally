@@ -18,6 +18,8 @@ export interface LatheSample {
   tex: number;
   /** Minimal wall thickness between the inner and the outer surface. */
   wall: number;
+  /** Patterned shades (see `shade.ts`): the inner wall follows the outer wall on this row. */
+  follow?: boolean;
 }
 
 export interface LathePattern {

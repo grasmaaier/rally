@@ -8,6 +8,8 @@ import {
   BORE_R, BULBS, COLOR_OPTIONS, CORE_R, COUNTED, KAP_OPTIONS, POST_HOLE, RECESS, RECESS_HUB, SHAPE_OPTIONS, SOCKETS, SPACERS, SPIGOT, TEXTURE_OPTIONS,
   bulbGlass, bulbOptions, kapRadius, patternFor, ringFactor, shapeRadius, type Bulb, type SegSpec, type Socket,
 } from './lampParts';
+import { HOLEABLE, LAYER_CEIL, LAYER_PATTERNS, RELIEF as RELIEF_PATS, THICK as THICK_PATS, isShaded, layerBudget, layerField, layerHoles, layerParams, layersOf, patternLabel, type Hole as LayerHole, type LayerSetup, type LayerSpec } from './lampLayers';
+import { gridEnvelope, gridSolid, shadeGrid, type ShadeGrid } from '../geom/shade';
 
 export const MAX_SEGMENTS = 8;
 /** Smallest wall around the bore of a solid segment (keeps the recess cone intact). */
@@ -21,7 +23,7 @@ const DZ = 0.25;
 /** Steel M10x1 lamp tube: grams per mm. */
 const TUBE_G_PER_MM = 0.22;
 
-type Role = 'seg' | 'kap' | 'lamel' | 'posts' | 'base' | 'cover' | 'cap' | 'canopy';
+type Role = 'seg' | 'kap' | 'laag' | 'lamel' | 'posts' | 'base' | 'cover' | 'cap' | 'canopy';
 type FaceKind = 'flat' | 'spigot' | 'recess' | 'posts';
 
 interface Hole {
@@ -64,6 +66,17 @@ interface Piece {
   chain?: boolean;
   /** Largest radius after making it printable / as designed. */
   shrunk?: number;
+  // layered shades (the kap = layer 1, nested 'laag' pieces inside)
+  layer?: LayerSpec;
+  /** Patterned shade mesh (instead of the plain lathe). */
+  grid?: ShadeGrid;
+  openings?: LayerHole[];
+  /** Inner layer: outer radius at a stack height (canonical, rim at z = 0). */
+  profile?: (z: number) => number;
+  /** Centring cone on the cavity side of the ceiling (for the next layer). */
+  spigotIn?: boolean;
+  /** Centring recess in the top face of the ceiling (inner layers). */
+  recessTop?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -83,6 +96,7 @@ const DEFAULT_SLOTS: Partial<SegSpec>[] = [
 const isOn = (p: Params, i: number) => Math.round(num(p, 'count')) >= i;
 const shapeOf = (p: Params, i: number) => str(p, `s${i}Shape`);
 const pendant = (p: Params) => str(p, 'lampType') === 'pendant';
+const anyKap = (p: Params) => Array.from({ length: MAX_SEGMENTS }, (_, i) => i + 1).some((i) => isOn(p, i) && shapeOf(p, i) === 'kap');
 
 function slotParams(i: number): ParamDef[] {
   const k = (x: string) => `s${i}${x}`;
@@ -143,6 +157,7 @@ const params: ParamDef[] = [
     help: 'Segment 1 is het bovenste. Alle segmenten schuiven over één holle draadbuis M10x1.',
   },
   ...Array.from({ length: MAX_SEGMENTS }, (_, i) => slotParams(i + 1)).flat(),
+  ...layerParams(anyKap),
   { type: 'group', label: 'Fitting & lamp' },
   {
     type: 'select', key: 'socket', label: 'Fitting', default: 'e27',
@@ -240,7 +255,43 @@ interface Ctx {
   texDepth: number;
   shadeWall: number;
   baseShape: string;
+  layers: LayerSetup;
+  /** More than one layer in the kap. */
+  layered: boolean;
 }
+
+/** Wall budget of a layer for the profile (thickest wall plus the relief). */
+const layerWall = (s: LayerSpec, c: Ctx) => {
+  const b = layerBudget(s, c.shadeWall);
+  return b.thick + b.relief;
+};
+
+/**
+ * Samples of a thin shade with a ceiling (canonical: open rim at z = 0, top
+ * of the ceiling at z = h). The cavity ends exactly at h - ceil, so a nested
+ * layer can touch the ceiling from below without overlapping.
+ */
+function shellSamples(pc: Piece, c: Ctx, radius: (z: number) => number, tex: number): LatheSample[] {
+  const h = pc.h;
+  const open = h - pc.ceil;
+  const shaded = !!pc.layer && isShaded(pc.layer);
+  const wall = pc.layer && shaded ? layerWall(pc.layer, c) : c.shadeWall;
+  const anchored = Number.isFinite(pc.anchorR);
+  const flange = anchored ? POST_HOLE + 4 : -1;
+  const lower = sampleRange(0, open, DZ, (z) => {
+    const fl = z <= flange;
+    // shaded: the pattern fades out toward the ceiling and the flange of the posts
+    const t = !shaded ? tex : fl ? 0 : clamp((open - z) / 3, 0, 1) * (anchored ? clamp((z - flange) / 4, 0, 1) : 1);
+    return { o: radius(z), i: fl ? pc.anchorR : Infinity, tex: t, wall: fl ? c.shadeWall : wall, follow: !fl };
+  });
+  const top = sampleRange(Math.min(h, open + 0.01), h, DZ, (z) => {
+    const i = pc.recessTop && z > h - RECESS.depth ? Math.max(BORE_R, RECESS.r0 - (h - z)) : BORE_R;
+    return { o: radius(z), i, tex: shaded ? 0 : tex, wall: SOLID_WALL };
+  });
+  const out = [...lower, ...top];
+  return c.pendant ? out : mirrorSamples(out);
+}
+
 
 function bodySamples(pc: Piece, c: Ctx): LatheSample[] {
   const h = pc.h;
@@ -260,10 +311,17 @@ function bodySamples(pc: Piece, c: Ctx): LatheSample[] {
     }
     case 'kap': {
       const spec = s!;
-      const topR = c.socket.d / 2 + 2 * c.shadeWall + 3;
+      let topR = c.socket.d / 2 + 2 * c.shadeWall + 3;
+      if (pc.layer) {
+        // room at the top for every layer, the gaps and the socket (walls may lean 45°)
+        const L = c.layered ? c.layers.specs : [pc.layer];
+        const walls = L.reduce((a, q) => a + (isShaded(q) ? layerWall(q, c) : c.shadeWall + c.texDepth), 0);
+        topR = Math.max(topR, c.socket.d / 2 + 4 + 1.42 * (walls + (L.length - 1) * c.layers.gap));
+      }
       const raw = kapRadius(spec, topR);
-      const ring = ringFactor(spec, c.texDepth, spec.D / 2);
+      const ring = pc.layer && isShaded(pc.layer) ? () => 1 : ringFactor(spec, c.texDepth, spec.D / 2);
       const tex = pc.pattern.min < 1 ? 1 : 0;
+      if (pc.layer) return shellSamples(pc, c, (z) => raw(z) * ring(z), tex);
       const flange = POST_HOLE + 4;
       // pendant: rim at the bottom; table lamp: the bowl opens upward
       const out = sampleRange(0, h, DZ, (z) => {
@@ -273,6 +331,8 @@ function bodySamples(pc: Piece, c: Ctx): LatheSample[] {
       });
       return c.pendant ? out : mirrorSamples(out);
     }
+    case 'laag':
+      return shellSamples(pc, c, pc.profile!, 0);
     case 'lamel': {
       const spec = s!;
       const R = spec.D / 2;
@@ -424,6 +484,145 @@ function postWindow(pc: Piece, face: 0 | 1, r: number): [number, number] {
 }
 
 // ---------------------------------------------------------------------------
+// Layered shades
+
+/** Patterned mesh of a shade layer; replaces the round envelope in `final`. */
+function shadeUp(pc: Piece, c: Ctx, notes: string[]) {
+  const spec = pc.layer!;
+  const s = pc.final;
+  const H = s[s.length - 1].z;
+  // ceiling on the bed: the open wall starts at the ceiling thickness
+  const geo = { R: Math.max(...s.map((q) => q.o)), z0: pc.ceil, H, wall: c.shadeWall };
+  const f = layerField(spec, geo, pc.name);
+  notes.push(...f.notes);
+  pc.grid = shadeGrid(s, f.field, pc.minInner);
+  const env = gridEnvelope(pc.grid);
+  pc.final = env;
+  const plain = (za: number, zb: number) => {
+    if (za < pc.ceil + 2 || zb > H - 2.5) return false;
+    for (const q of env) if (q.z >= za && q.z <= zb && !q.follow) return false;
+    // openings only where the wall leans less than ~40°
+    for (let z = za; z < zb; z += 1) if (Math.abs(sampleAt(env, Math.min(zb, z + 1), 'o') - sampleAt(env, z, 'o')) > 0.85) return false;
+    return true;
+  };
+  const h = layerHoles(spec, geo, pc.name, (z) => sampleAt(env, z, 'o'), plain);
+  notes.push(...h.notes);
+  pc.openings = h.holes;
+}
+
+/** Stack range of the cavity of a shade (below / above its ceiling). */
+const cavity = (pc: Piece, c: Ctx): [number, number] => (c.pendant ? [0, pc.h - pc.ceil] : [pc.ceil, pc.h]);
+
+/** Outer radius of a nested layer: the inner wall of the layer around it, minus the gap (square to the wall). */
+function innerProfile(prev: Piece, pc: Piece, c: Ctx): (z: number) => number {
+  const ps = stackFinal(prev);
+  const [lo, hi] = cavity(prev, c);
+  // stay off the ceiling face, where the inner radius jumps to the tube
+  const a = lo + (c.pendant ? 0.3 : 2);
+  const b = hi - (c.pendant ? 2 : 0.3);
+  const iAt = (zs: number) => sampleAt(ps, clamp(zs, a, b), 'i');
+  return (zc) => {
+    const zs = (c.pendant ? pc.z0 + zc : pc.z0 + pc.h - zc) - prev.z0;
+    let m = Infinity;
+    for (let d = -1.5; d <= 1.5; d += 0.5) m = Math.min(m, iAt(zs + d));
+    const slope = (iAt(zs + 1.5) - iAt(zs - 1.5)) / 3;
+    return m - c.layers.gap * clamp(Math.sqrt(1 + slope * slope), 1, 2);
+  };
+}
+
+/** The nested layer must keep the gap to the layer around it everywhere. */
+function checkGap(prev: Piece, pc: Piece, c: Ctx) {
+  const ps = stackFinal(prev);
+  const cs = stackFinal(pc);
+  const [lo, hi] = cavity(prev, c);
+  const shift = pc.z0 - prev.z0;
+  const want = c.layers.gap * 0.9 - 0.05;
+  let worst = Infinity;
+  for (const q of cs) {
+    const zs = q.z + shift;
+    if (zs > lo + 0.05 && zs < hi - 0.05) worst = Math.min(worst, sampleAt(ps, zs, 'i') - q.o);
+  }
+  for (const q of ps) {
+    const zl = q.z - shift;
+    if (q.z > lo + 0.05 && q.z < hi - 0.05 && zl >= cs[0].z && zl <= cs[cs.length - 1].z) worst = Math.min(worst, q.i - sampleAt(cs, zl, 'o'));
+  }
+  if (worst < want) {
+    throw new UserError(`Te weinig ruimte tussen ${prev.name.replace(/^\d+\. /, '')} en ${pc.name.replace(/^\d+\. /, '')} (${Math.max(0, worst).toFixed(1)} mm i.p.v. ${c.layers.gap} mm). Maak de kap breder, de tussenruimte kleiner of neem minder lagen.`);
+  }
+}
+
+function buildLayers(kap: Piece, c: Ctx, hasChain: boolean, notes: string[]): Piece[] {
+  if (kap.layer && isShaded(kap.layer)) shadeUp(kap, c, notes);
+  if (!c.layered) return [];
+  const out: Piece[] = [];
+  const openDepth = kap.h - kap.ceil;
+  const slot = kap.spec!.slot;
+  const n = c.layers.count;
+  let prev = kap;
+  // from the top of the kap (pendant) or its floor (table): the ceilings stack on the tube
+  let used = kap.ceil;
+  for (const spec of c.layers.specs.slice(1)) {
+    let len = spec.len;
+    if (hasChain && len > 1) {
+      len = 1;
+      notes.push(`Laag ${spec.index}: niet langer dan de buitenste kap, want de lamellen hangen aan de rand.`);
+    }
+    const h = kap.ceil + len * openDepth - used;
+    if (h < LAYER_CEIL + 15) throw new UserError(`Laag ${spec.index} van de kap wordt te kort (${Math.max(0, h - LAYER_CEIL).toFixed(0)} mm open wand). Maak hem langer of de kap hoger.`);
+    const pc = newPiece('laag', `${slot}. Kap laag ${spec.index}${spec.index === n ? ' (binnen)' : ''}`, spec.color, h);
+    pc.layer = spec;
+    pc.ceil = LAYER_CEIL;
+    pc.recessTop = true;
+    pc.spigotIn = spec.index < n;
+    pc.flipped = c.pendant;
+    pc.z0 = c.pendant ? kap.z0 + kap.h - used - h : kap.z0 + used;
+    pc.profile = innerProfile(prev, pc, c);
+    finish(pc, c);
+    shadeUp(pc, c, notes);
+    checkGap(prev, pc, c);
+    out.push(pc);
+    prev = pc;
+    used += LAYER_CEIL;
+  }
+  return out;
+}
+
+/** Solid of a turned part: patterned shade or lathe, plus the centring cone and the openings of a layer. */
+function shellSolid(M: ManifoldToplevel, pc: Piece): Manifold {
+  let solid = pc.grid ? gridSolid(M, pc.grid) : latheSolid(M, pc.final, pc.pattern);
+  if (pc.spigotIn) {
+    // on the cavity side of the ceiling (print coordinates: ceiling on the bed)
+    const k = (SPIGOT.r0 - SPIGOT.r1) / SPIGOT.h;
+    const cone = M.Manifold.cylinder(SPIGOT.h + 0.05, SPIGOT.r0 + 0.05 * k, SPIGOT.r1, 64).translate([0, 0, pc.ceil - 0.05]);
+    const bore = M.Manifold.cylinder(SPIGOT.h + 2, BORE_R, BORE_R, 48).translate([0, 0, pc.ceil - 1]);
+    solid = M.Manifold.union([solid, cone.subtract(bore)]);
+  }
+  if (pc.openings?.length) {
+    const env = pc.final;
+    const cutters = pc.openings.map((hole) => {
+      const vs = hole.poly.map((q) => q[1]);
+      const za = hole.z + Math.min(...vs);
+      const zb = hole.z + Math.max(...vs);
+      let lo = Infinity;
+      let hi = 0;
+      for (let z = za; z <= zb + 0.25; z += 0.5) {
+        lo = Math.min(lo, sampleAt(env, Math.min(z, zb), 'i'));
+        hi = Math.max(hi, sampleAt(env, Math.min(z, zb), 'o'));
+      }
+      const rc = sampleAt(env, hole.z, 'o');
+      const pts: [number, number, number][] = [];
+      for (const [sx, v] of hole.poly) {
+        const a = hole.th + sx / rc;
+        for (const r of [lo - 0.8, hi + 0.8]) pts.push([r * Math.cos(a), r * Math.sin(a), hole.z + v]);
+      }
+      return M.Manifold.hull(pts);
+    });
+    solid = solid.subtract(M.Manifold.compose(cutters));
+  }
+  return solid;
+}
+
+// ---------------------------------------------------------------------------
 // Clearance between the bulb and the printed parts (everything is coaxial,
 // so this is a 2D problem in the r–z half-plane)
 
@@ -525,9 +724,14 @@ function lidSolid(M: ManifoldToplevel, r: number, screwR: number, angles: number
 function build(p: Params, { M, printer }: Parameters<ToolDef['build']>[1]): BuildOutput {
   const isPendant = pendant(p);
   const { socket, bulb, key: bulbKey } = bulbOf(p);
-  const c: Ctx = { pendant: isPendant, socket, texDepth: num(p, 'texDepth'), shadeWall: clamp(num(p, 'shadeWall'), 0.8, 3), baseShape: str(p, 'baseShape') };
   const count = clamp(Math.round(num(p, 'count')), 1, MAX_SEGMENTS);
   const specs = Array.from({ length: count }, (_, i) => specOf(p, i + 1));
+  const kapSpec = specs.find((s) => s.shape === 'kap');
+  const layers = layersOf(p, kapSpec?.color ?? '#f2efe8');
+  const c: Ctx = {
+    pendant: isPendant, socket, texDepth: num(p, 'texDepth'), shadeWall: clamp(num(p, 'shadeWall'), 0.8, 3), baseShape: str(p, 'baseShape'),
+    layers, layered: !!kapSpec && layers.count > 1,
+  };
   const warnings: string[] = [];
   const tips: string[] = [];
   const notes: string[] = [];
@@ -614,6 +818,15 @@ function build(p: Params, { M, printer }: Parameters<ToolDef['build']>[1]): Buil
   if (kapPiece) {
     // ceiling on the bed (pendant) or floor on the bed (table): the shade opens upward while printing
     kapPiece.flipped = isPendant;
+    const l1 = layers.specs[0];
+    if (c.layered || isShaded(l1)) {
+      kapPiece.layer = l1;
+      if (isShaded(l1)) kapPiece.pattern = ROUND;
+      if (c.layered) {
+        kapPiece.spigotIn = true;
+        kapPiece.name = `${kapPiece.spec!.slot}. Kap laag 1 (buiten)`;
+      }
+    }
   }
   for (const pc of all) if (pc.role === 'cover') pc.flipped = isPendant;
 
@@ -674,6 +887,10 @@ function build(p: Params, { M, printer }: Parameters<ToolDef['build']>[1]): Buil
   for (const pc of all) if (pc.spec && pc.role !== 'posts') checkFit(pc.name, pc.spec.D, pc.h);
   for (const pc of all)
     if (pc.role === 'kap' && pc.h < pc.ceil + 15) throw new UserError(`${pc.name}: een kap moet minstens ${Math.ceil(pc.ceil + 15)} mm hoog zijn.`);
+  if (kapPiece && c.layered) {
+    const need = kapPiece.ceil + (layers.count - 1) * LAYER_CEIL + 15;
+    if (kapPiece.h < need) throw new UserError(`${kapPiece.name}: een kap met ${layers.count} lagen moet minstens ${Math.ceil(need)} mm hoog zijn.`);
+  }
 
   for (const pc of all) if (pc.role !== 'posts') finish(pc, c);
 
@@ -740,11 +957,16 @@ function build(p: Params, { M, printer }: Parameters<ToolDef['build']>[1]): Buil
   }
   const stackTop = z;
 
+  // nested layers inside the kap (each on the tube, under the ceiling of the one around it)
+  const layerPieces = kapPiece?.layer ? buildLayers(kapPiece, c, chainPieces.length > 0, notes) : [];
+
   // socket and bulb
   const tubePieces = all.filter((pc) => !pc.chain);
   const end = isPendant ? tubePieces[0] : tubePieces[tubePieces.length - 1];
+  // the socket sits under the innermost layer
+  const sock = end.role === 'kap' && layerPieces.length ? layerPieces[layerPieces.length - 1] : end;
   let socketFace: number;
-  if (end.role === 'kap') socketFace = isPendant ? end.z0 + end.h - end.ceil : end.z0 + end.ceil;
+  if (end.role === 'kap') socketFace = isPendant ? sock.z0 + sock.h - sock.ceil : sock.z0 + sock.ceil;
   else if (end.role === 'cover') socketFace = isPendant ? end.z0 + end.h - COVER.floor : end.z0 + COVER.floor;
   else socketFace = isPendant ? end.z0 : end.z0 + end.h;
   const dir: 1 | -1 = isPendant ? -1 : 1;
@@ -754,11 +976,13 @@ function build(p: Params, { M, printer }: Parameters<ToolDef['build']>[1]): Buil
 
   // the socket must fit inside the kap
   if (end.role === 'kap') {
-    const s = stackFinal(end);
+    const s = stackFinal(sock);
     for (let t = 1; t <= socket.h; t += 2) {
-      const zl = socketFace + dir * t - end.z0;
-      if (zl < 0 || zl > end.h) continue;
-      if (sampleAt(s, zl, 'i') < socket.d / 2 + 0.4) throw new UserError(`De ${socket.label}-fitting past niet in de kap. Maak de kap breder.`);
+      const zl = socketFace + dir * t - sock.z0;
+      if (zl < 0 || zl > sock.h) continue;
+      if (sampleAt(s, zl, 'i') < socket.d / 2 + 0.4) {
+        throw new UserError(`De ${socket.label}-fitting past niet in de ${layerPieces.length ? 'binnenste laag' : 'kap'}. Maak de kap breder${layerPieces.length ? ', de tussenruimte kleiner of neem minder lagen' : ''}.`);
+      }
     }
   }
 
@@ -766,7 +990,7 @@ function build(p: Params, { M, printer }: Parameters<ToolDef['build']>[1]): Buil
   const clearance = num(p, 'clearance');
   let nearest = Infinity;
   let nearestName = '';
-  for (const pc of all) {
+  for (const pc of [...all, ...layerPieces]) {
     if (pc.role === 'posts' || pc.role === 'cover') continue;
     const d = clearanceTo(outlineOf(pc), glass, mouth, dir);
     if (d < 0) throw new UserError(`De lamp (${bulb.label.split(' —')[0]}) raakt ${pc.name}. Kies een kleinere lamp of maak de kap/lamel ruimer.`);
@@ -783,7 +1007,8 @@ function build(p: Params, { M, printer }: Parameters<ToolDef['build']>[1]): Buil
   if (end.role === 'kap') {
     const s = stackFinal(end);
     const rimZ = isPendant ? 0 : end.h;
-    const rimR = Math.min(sampleAt(s, rimZ, 'i'), ...all.filter((q) => q.role === 'lamel').map((q) => q.final[0].i));
+    const layerRims = layerPieces.map((q) => sampleAt(stackFinal(q), isPendant ? 0 : q.h, 'i'));
+    const rimR = Math.min(sampleAt(s, rimZ, 'i'), ...layerRims, ...all.filter((q) => q.role === 'lamel').map((q) => q.final[0].i));
     if (rimR * 2 < bulb.d + 4) warnings.push(`De opening (Ø${(rimR * 2).toFixed(0)} mm) is kleiner dan de lamp (Ø${bulb.d} mm): om de lamp te wisselen moet je de kap losnemen.`);
   }
 
@@ -823,6 +1048,18 @@ function build(p: Params, { M, printer }: Parameters<ToolDef['build']>[1]): Buil
         if (Math.hypot(a.x - b.x, a.y - b.y) < a.r + b.r + 1.5) throw new UserError(`${pc.name}: de gaten voor de stijlen boven en onder raken elkaar. Maak het segment dikker of kies een ander aantal stijlen.`);
   }
 
+  const addLayerPart = (pc: Piece) => {
+    const printH = pc.final[pc.final.length - 1].z;
+    const maxO = Math.max(...pc.final.map((q) => q.o));
+    checkFit(pc.name, 2 * maxO, printH);
+    const solid = shellSolid(M, pc);
+    const idx = parts.length;
+    parts.push({ name: pc.name, solid, color: pc.color });
+    scene.push({ kind: 'part', part: idx, matrix: placeMatrix(pc) });
+    pc.partIndex = idx;
+    masses.push({ m: grams(solid), z: pc.z0 + pc.h / 2 });
+    rows.push([kapPiece!.spec!.slot, `${pc.name.replace(/^\d+\. /, '')} · ${patternLabel(pc.layer!)}`, `Ø${(2 * maxO).toFixed(0)} × ${pc.h.toFixed(0)} mm`, colorName(pc.color), pc.flipped ? 'ondersteboven' : 'rechtop']);
+  };
   for (const pc of all) {
     if (pc.role === 'posts') {
       const n = pc.postCount!;
@@ -843,7 +1080,7 @@ function build(p: Params, { M, printer }: Parameters<ToolDef['build']>[1]): Buil
     if ((pc.shrunk ?? 1) < 0.97 && pc.spec && pc.role !== 'base') {
       notes.push(`${pc.name}: zonder support kan de wand niet vlakker dan 45° oplopen, dus is hij Ø${(2 * maxO).toFixed(0)} mm geworden (i.p.v. Ø${pc.spec.D.toFixed(0)}). Maak hem hoger voor de volle maat.`);
     }
-    let solid = latheSolid(M, pc.final, pc.pattern);
+    let solid = shellSolid(M, pc);
     const cut: Manifold[] = [];
     for (const hole of pc.holes) {
       const cutter = postHoleCutter(M, hole.r);
@@ -870,11 +1107,12 @@ function build(p: Params, { M, printer }: Parameters<ToolDef['build']>[1]): Buil
     const s = pc.spec;
     rows.push([
       s?.slot || '–',
-      pc.role === 'seg' || pc.role === 'kap' || pc.role === 'lamel' ? shapeLabel(s!) : pc.name,
+      pc.role === 'seg' || pc.role === 'kap' || pc.role === 'lamel' ? shapeLabel(s!) + (pc.layer ? `${c.layered ? ' — laag 1' : ''}${isShaded(pc.layer) ? ` · ${patternLabel(pc.layer)}` : ''}` : '') : pc.name,
       `Ø${(2 * maxO).toFixed(0)} × ${pc.h.toFixed(0)} mm`,
       colorName(pc.color),
       pc.flipped ? 'ondersteboven' : 'rechtop',
     ]);
+    if (pc.role === 'kap') layerPieces.forEach(addLayerPart);
   }
 
   // lid of the base
@@ -983,7 +1221,7 @@ function build(p: Params, { M, printer }: Parameters<ToolDef['build']>[1]): Buil
   info.push({ kind: 'kv', title: 'Lamp', rows: kv });
   info.push({ kind: 'table', title: 'Printdelen (stapel van boven naar beneden)', headers: ['Seg.', 'Vorm', 'Maat', 'Kleur', 'Printstand'], rows: rows.reverse() });
   info.push({ kind: 'table', title: 'Benodigdheden', headers: ['#', 'Onderdeel'], rows: hardware(isPendant, socket, bulb, bulbKey, tubeL, !!base, bool(p, 'felt'), str(p, 'ballast'), bool(p, 'canopy'), ballastG) });
-  info.push({ kind: 'text', title: 'Montage', text: assembly(socket, !!base, useCover, hasKap, chainPieces.length > 0, all.some((q) => q.role === 'posts' && !q.chain)) });
+  info.push({ kind: 'text', title: 'Montage', text: assembly(socket, !!base, useCover, hasKap, chainPieces.length > 0, all.some((q) => q.role === 'posts' && !q.chain), layerPieces.length + 1) });
 
   warnings.push(...notes);
   tips.push(
@@ -992,6 +1230,18 @@ function build(p: Params, { M, printer }: Parameters<ToolDef['build']>[1]): Buil
     'Kappen en lamellen in wit PETG/PLA met 1–2 wandlussen en 0% infill laten het licht mooi door. Massieve segmenten: 2–3 wanden en 10–15% infill is genoeg.',
     'Bollen en koepels hebben aan de onderkant een kegel van 45°: zo printen ze zonder support.',
   );
+  if (kapPiece?.layer) {
+    const used = [kapPiece, ...layerPieces].map((q) => q.layer!).filter(isShaded);
+    tips.push(
+      layerPieces.length
+        ? `Kap in ${layerPieces.length + 1} lagen: print elke laag apart in doorschijnend PLA of PETG ("translucent"/"clear"). Een wand van 0,8–1,6 mm laat het meeste licht door; de tussenruimte van ${layers.gap} mm geeft de moiré.`
+        : 'Patroonkap: print in doorschijnend PLA of PETG; een wand van 0,8–1,6 mm laat het meeste licht door.',
+    );
+    if (used.some((q) => RELIEF_PATS.has(q.pat))) tips.push(`Golven en plissé hebben overal dezelfde wanddikte: 1–2 wandlussen en 0% infill${layerPieces.length ? '' : ', of vase mode (spiraalvaas) met de plafondschijf als bodemlagen'}.`);
+    const open = (q: LayerSpec) => HOLEABLE.has(q.pat) && q.holes;
+    if (used.some((q) => THICK_PATS.has(q.pat) && !open(q))) tips.push('Strepen, raster, stippen en honingraat zijn dikke en dunne wand: zet 2–3 wandlussen en 100% infill (of "gap fill" aan), dan worden de dikke delen massief en zie je het patroon als licht en donker. Niet in vase mode.');
+    if (used.some(open)) tips.push('Doorbroken lagen: elk gaatje loopt aan de bovenkant (zoals geprint) spits toe onder 56°, dus het print zonder support.');
+  }
   if (specs.some((s) => s.tex === 'plisse' || s.tex === 'ribbels')) tips.push('Fijne plissé: print met 0,12–0,16 mm laaghoogte en zet "naad" op "achter" of "uitgelijnd" zodat de naad in een vouw valt.');
   return { parts, scene, info, tips, warnings, defaultView: 'assembly' };
 }
@@ -1020,7 +1270,7 @@ function hardware(isPendant: boolean, socket: Socket, bulb: Bulb, bulbKey: strin
   return rows;
 }
 
-function assembly(socket: Socket, base: boolean, cover: boolean, kap: boolean, chain: boolean, posts: boolean): string {
+function assembly(socket: Socket, base: boolean, cover: boolean, kap: boolean, chain: boolean, posts: boolean, layers: number): string {
   const steps: string[] = [];
   if (base) {
     steps.push('1. Steek de draadbuis van onderen door de voet en zet hem in de holte vast met sluitring + moer.');
@@ -1034,6 +1284,7 @@ function assembly(socket: Socket, base: boolean, cover: boolean, kap: boolean, c
     steps.push('3. Trek het snoer van boven door de buis en sluit de fitting aan. Zet boven een trekontlasting (kabelwartel M10x1) op de buis — de lamp hangt aan die trekontlasting, nooit aan de aansluitdraden.');
     steps.push('4. De plafondkap hangt aan een tweede trekontlasting; schroef hem met twee schroeven tegen het plafond en sluit aan met lasklemmen.');
   }
+  if (layers > 1) steps.push(`Kap in lagen: schuif eerst de buitenste kap op de buis, dan laag 2${layers > 2 ? ' en laag 3' : ''}. Het kegeltje onder elke plafondschijf valt in de uitsparing van de volgende laag, zo blijven de lagen in het midden; de fitting klemt ze tegen elkaar. Draai een laag een stukje rond voor een ander moiré-beeld.`);
   if (posts) steps.push('Stijlen: steek ze in de gaatjes van de segmenten erboven en eronder; de buis houdt alles op zijn plek.');
   if (chain) steps.push('Lamellen: lijm de stijlen in de rand van de kap en in de lamellen (secondelijm of 2K-lijm), afwisselend een lamel en een set stijlen.');
   steps.push('Laat de aansluiting op het lichtnet door een vakkundig iemand controleren. Alleen LED-lampen.');
@@ -1196,6 +1447,56 @@ const presets: Preset[] = [
       ),
     },
   },
+  {
+    name: 'Moiré golven (hanglamp)',
+    values: {
+      lampType: 'pendant', socket: 'e27', bulb27: 'a60', shadeWall: 1, layers: '2', layerGap: 6,
+      kl1Pat: 'golfOp', kl1N: 28, kl1Depth: 2, kl1Twist: 40,
+      kl2Pat: 'golfRond', kl2N: 5, kl2Up: 8, kl2Depth: 1.6, kl2Len: 94, kl2Color: W,
+      ...stack(
+        { shape: 'cilinder', D: 44, H: 30, v: 30, color: BLACK },
+        { shape: 'kap', kap: 'klok', D: 230, H: 170, v: 30, color: W },
+      ),
+    },
+  },
+  {
+    name: 'Raster in golf (hanglamp)',
+    values: {
+      lampType: 'pendant', socket: 'e27', bulb27: 'a60', shadeWall: 1, layers: '2', layerGap: 5,
+      kl1Pat: 'golfRond', kl1N: 4, kl1Up: 6, kl1Depth: 2,
+      kl2Pat: 'raster', kl2N: 40, kl2Depth: 1.2, kl2Holes: false, kl2Len: 100, kl2Color: W,
+      ...stack(
+        { shape: 'bol', D: 56, H: 46, v: 30, color: TEAL },
+        { shape: 'kap', kap: 'cilinder', D: 200, H: 160, v: 30, color: W },
+      ),
+    },
+  },
+  {
+    name: 'Stippen in een gladde kap (hanglamp)',
+    values: {
+      lampType: 'pendant', socket: 'e27', bulb27: 'a60', shadeWall: 1.2, layers: '2', layerGap: 8,
+      kl1Pat: 'glad',
+      kl2Pat: 'stippen', kl2N: 32, kl2Holes: true, kl2Len: 88, kl2Color: YELLOW,
+      ...stack(
+        { shape: 'cilinder', D: 40, H: 26, v: 40, color: W },
+        { shape: 'kap', kap: 'koepel', D: 240, H: 130, color: W },
+      ),
+    },
+  },
+  {
+    name: 'Drie lagen honingraat (tafel)',
+    values: {
+      lampType: 'table', socket: 'e14', bulb14: 'g45', baseShape: 'schijf', baseD: 150, baseH: 40, baseColor: BLACK, shadeWall: 1, layers: '3', layerGap: 5,
+      kl1Pat: 'strepen', kl1N: 36, kl1Depth: 1, kl1Twist: 90,
+      kl2Pat: 'hex', kl2N: 30, kl2Depth: 1.2, kl2Len: 92, kl2Color: W,
+      kl3Pat: 'golfOp', kl3N: 20, kl3Depth: 1.6, kl3Twist: -60, kl3Len: 82, kl3Color: PINK,
+      ...stack(
+        { shape: 'kap', kap: 'cilinder', D: 190, H: 150, color: W },
+        { shape: 'hals', D: 24, H: 60, color: BLACK },
+        { shape: 'tol', D: 76, H: 70, n: 2, v: 30, color: BLACK },
+      ),
+    },
+  },
 ];
 
 const rnd = (a: number, b: number, step = 1) => Math.round((a + Math.random() * (b - a)) / step) * step;
@@ -1222,8 +1523,24 @@ function randomize(): Partial<Params> {
       color: pick(palette),
     });
   }
-  if (isPendant && Math.random() < 0.7) slots.push({ shape: 'kap', kap: pick(KAP_OPTIONS.map((o) => o.value)), D: rnd(160, 260), H: rnd(90, 170), v: rnd(0, 40), n: rnd(3, 6), tex: Math.random() < 0.5 ? 'glad' : 'plisse', texN: rnd(60, 160), color: W });
+  const hasKap = isPendant && Math.random() < 0.7;
+  if (hasKap) slots.push({ shape: 'kap', kap: pick(KAP_OPTIONS.map((o) => o.value)), D: rnd(160, 260), H: rnd(90, 170), v: rnd(0, 40), n: rnd(3, 6), tex: Math.random() < 0.5 ? 'glad' : 'plisse', texN: rnd(60, 160), color: W });
+  // sometimes a layered (moiré) shade
+  const layered: Partial<Params> = { layers: '1', kl1Pat: 'segment' };
+  if (hasKap && Math.random() < 0.4) {
+    const pats = LAYER_PATTERNS.map((o) => o.value).filter((v) => v !== 'glad');
+    const count = Math.random() < 0.75 ? 2 : 3;
+    Object.assign(layered, { layers: String(count), layerGap: rnd(4, 10), shadeWall: 1 });
+    for (let i = 1; i <= count; i++) {
+      const pat = pick(pats);
+      Object.assign(layered, {
+        [`kl${i}Pat`]: pat, [`kl${i}N`]: pat === 'golfRond' ? rnd(3, 8) : rnd(16, 48), [`kl${i}Up`]: rnd(4, 10), [`kl${i}Depth`]: rnd(8, 20) / 10,
+        [`kl${i}Twist`]: pick([0, 0, 45, -60, 90]), [`kl${i}Holes`]: HOLEABLE.has(pat) && Math.random() < 0.4, [`kl${i}Len`]: rnd(80, 100), [`kl${i}Color`]: W,
+      });
+    }
+  }
   return {
+    ...layered,
     lampType: isPendant ? 'pendant' : 'table',
     socket: 'e27',
     bulb27: isPendant ? pick(['a60', 'g95', 'st64']) : pick(['g95', 'g125', 'g80']),
