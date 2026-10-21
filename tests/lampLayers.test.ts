@@ -158,6 +158,14 @@ describe('kap in lagen: elk patroon op elke laag', () => {
     expect(inner.volume).toBeLessThan(0.85 * solid.volume);
   });
 
+  it.each(['cilinder', 'kegel', 'klok', 'koepel', 'trap'].flatMap((kap) => (['pendant', 'table'] as const).map((type) => [kap, type] as const)))('kapvorm %s (%s)', async (kap, type) => {
+    const res = await buildTool(M, tool, layered([{ pat: 'golfOp', n: 24, twist: 30 }, { pat: 'ruit', holes: true, n: 24 }], { type, kap, D: 230, H: 140, extra: type === 'table' ? { socket: 'e14', bulb14: 'g45' } : {} }));
+    checkParts(res, `${kap} ${type}`);
+    expect(overlaps(res)).toEqual([]);
+    const names = layerParts(res).map((q) => q.name);
+    expect(radialGap(res, names[0], names[1]).gap).toBeGreaterThan(6 * 0.85);
+  });
+
   it('ook een enkele patroonkap (1 laag) en een segmenttextuur buiten', async () => {
     const one = await buildTool(M, tool, layered([{ pat: 'golfRond', up: 9 }]));
     checkParts(one, 'enkel');

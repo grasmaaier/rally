@@ -15,6 +15,8 @@ export const LAYER_CEIL = 5;
 /** Smallest web between openings, and the slope of the roof of an opening (from horizontal). */
 const WEB = 2;
 const ROOF = Math.tan((56 * Math.PI) / 180);
+/** Openings per layer (keeps the boolean cut quick). */
+const MAX_HOLES = 900;
 
 export const LAYER_PATTERNS = [
   { value: 'glad', label: 'Glad' },
@@ -281,8 +283,7 @@ export function layerField(s: LayerSpec, g: LayerGeo, name: string): FieldOut {
     case 'hex': {
       if (holesOn(s)) {
         // openings are cut afterwards; the wall stays plain
-        segs = Math.max(base, Math.min(1440, n * 6));
-        dz = 1.5;
+        dz = 4;
         break;
       }
       const D = s.depth;
@@ -436,14 +437,17 @@ export function layerHoles(s: LayerSpec, g: LayerGeo, name: string, env: (z: num
   const notes: string[] = [];
   if (!holesOn(s)) return { holes: [], notes };
   const C = TAU * g.R;
-  // openings between ~6 and ~36 mm wide (at the widest), never more than a third of the height
-  const n = clamp(s.n, Math.ceil(C / Math.min(36, (g.H - g.z0) / 3)), Math.max(3, Math.floor(C / 6)));
+  // openings between ~6 and ~36 mm wide (at the widest), never more than a third of the height,
+  // and at most ~MAX_HOLES of them (build time): rows are about k cells high
+  const k = s.pat === 'raster' ? 1.45 : s.pat === 'ruit' ? 0.75 : SQ3 / 2;
+  const most = Math.floor(Math.sqrt((MAX_HOLES * k * C) / Math.max(1, g.H - g.z0)));
+  const n = clamp(Math.min(s.n, most), Math.ceil(C / Math.min(36, (g.H - g.z0) / 3)), Math.max(3, Math.floor(C / 6)));
   if (n !== s.n) notes.push(`${name}: ${n} gaatjes rondom (i.p.v. ${s.n}) zodat ze passen.`);
   const wRef = C / n;
   // webs between the openings keep the shell stiff
   const web = Math.max(WEB, 2 * g.wall, 0.14 * wRef);
   // rows: pitch and the column offset of each row (in cells); raster cells are taller for the pointed roof
-  const P = s.pat === 'raster' ? 1.45 * wRef : s.pat === 'ruit' ? 0.75 * wRef : (wRef * SQ3) / 2;
+  const P = k * wRef;
   const stagger = s.pat !== 'raster';
   const holes: Hole[] = [];
   const cache = new Map<number, Poly | null>();
@@ -462,7 +466,7 @@ export function layerHoles(s: LayerSpec, g: LayerGeo, name: string, env: (z: num
     if (!ok(z + Math.min(...vs) - 1.5, z + Math.max(...vs) + 1.5)) continue;
     const off = stagger && j & 1 ? 0.5 : 0;
     for (let i = 0; i < n; i++) holes.push({ th: (TAU * (i + 0.5 + off)) / n, z, poly });
-    if (holes.length > 2400) break;
+    if (holes.length > 1.3 * MAX_HOLES) break;
   }
   if (!holes.length) notes.push(`${name}: geen ruimte voor gaatjes in deze laag (te klein of te schuin) — de wand blijft dicht.`);
   return { holes, notes };

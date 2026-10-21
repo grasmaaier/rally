@@ -37,7 +37,7 @@ export interface ShadeGrid {
 }
 
 /** Vertex budget per shade (outer + inner). */
-const BUDGET = 420000;
+const BUDGET = 200000;
 
 function interp(s: LatheSample[], z: number) {
   let lo = 0;
