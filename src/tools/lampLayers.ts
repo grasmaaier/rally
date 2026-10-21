@@ -13,7 +13,7 @@ export const MAX_LAYERS = 3;
 /** Thickness of the ceiling of an inner layer (takes the centring recess). */
 export const LAYER_CEIL = 5;
 /** Smallest web between openings, and the slope of the roof of an opening (from horizontal). */
-const WEB = 1.6;
+const WEB = 2;
 const ROOF = Math.tan((56 * Math.PI) / 180);
 
 export const LAYER_PATTERNS = [
@@ -440,9 +440,10 @@ export function layerHoles(s: LayerSpec, g: LayerGeo, name: string, env: (z: num
   const n = clamp(s.n, Math.ceil(C / Math.min(36, (g.H - g.z0) / 3)), Math.max(3, Math.floor(C / 6)));
   if (n !== s.n) notes.push(`${name}: ${n} gaatjes rondom (i.p.v. ${s.n}) zodat ze passen.`);
   const wRef = C / n;
-  const web = Math.max(WEB, 1.5 * g.wall);
-  // rows: pitch and the column offset of each row (in cells)
-  const P = s.pat === 'raster' ? wRef : s.pat === 'ruit' ? 0.75 * wRef : (wRef * SQ3) / 2;
+  // webs between the openings keep the shell stiff
+  const web = Math.max(WEB, 2 * g.wall, 0.14 * wRef);
+  // rows: pitch and the column offset of each row (in cells); raster cells are taller for the pointed roof
+  const P = s.pat === 'raster' ? 1.45 * wRef : s.pat === 'ruit' ? 0.75 * wRef : (wRef * SQ3) / 2;
   const stagger = s.pat !== 'raster';
   const holes: Hole[] = [];
   const cache = new Map<number, Poly | null>();

@@ -266,6 +266,15 @@ const layerWall = (s: LayerSpec, c: Ctx) => {
   return b.thick + b.relief;
 };
 
+/** Smallest radius of a kap: room for the socket (and for every layer and gap; walls may lean 45°). */
+function kapTopR(pc: Piece, c: Ctx) {
+  const topR = c.socket.d / 2 + 2 * c.shadeWall + 3;
+  if (!pc.layer) return topR;
+  const L = c.layered ? c.layers.specs : [pc.layer];
+  const walls = L.reduce((a, q) => a + (isShaded(q) ? layerWall(q, c) : c.shadeWall + c.texDepth), 0);
+  return Math.max(topR, c.socket.d / 2 + 4 + 1.42 * (walls + (L.length - 1) * c.layers.gap));
+}
+
 /**
  * Samples of a thin shade with a ceiling (canonical: open rim at z = 0, top
  * of the ceiling at z = h). The cavity ends exactly at h - ceil, so a nested
@@ -311,13 +320,7 @@ function bodySamples(pc: Piece, c: Ctx): LatheSample[] {
     }
     case 'kap': {
       const spec = s!;
-      let topR = c.socket.d / 2 + 2 * c.shadeWall + 3;
-      if (pc.layer) {
-        // room at the top for every layer, the gaps and the socket (walls may lean 45°)
-        const L = c.layered ? c.layers.specs : [pc.layer];
-        const walls = L.reduce((a, q) => a + (isShaded(q) ? layerWall(q, c) : c.shadeWall + c.texDepth), 0);
-        topR = Math.max(topR, c.socket.d / 2 + 4 + 1.42 * (walls + (L.length - 1) * c.layers.gap));
-      }
+      const topR = kapTopR(pc, c);
       const raw = kapRadius(spec, topR);
       const ring = pc.layer && isShaded(pc.layer) ? () => 1 : ringFactor(spec, c.texDepth, spec.D / 2);
       const tex = pc.pattern.min < 1 ? 1 : 0;
@@ -501,8 +504,6 @@ function shadeUp(pc: Piece, c: Ctx, notes: string[]) {
   const plain = (za: number, zb: number) => {
     if (za < pc.ceil + 2 || zb > H - 2.5) return false;
     for (const q of env) if (q.z >= za && q.z <= zb && !q.follow) return false;
-    // openings only where the wall leans less than ~40°
-    for (let z = za; z < zb; z += 1) if (Math.abs(sampleAt(env, Math.min(zb, z + 1), 'o') - sampleAt(env, z, 'o')) > 0.85) return false;
     return true;
   };
   const h = layerHoles(spec, geo, pc.name, (z) => sampleAt(env, z, 'o'), plain);
@@ -887,6 +888,9 @@ function build(p: Params, { M, printer }: Parameters<ToolDef['build']>[1]): Buil
   for (const pc of all) if (pc.spec && pc.role !== 'posts') checkFit(pc.name, pc.spec.D, pc.h);
   for (const pc of all)
     if (pc.role === 'kap' && pc.h < pc.ceil + 15) throw new UserError(`${pc.name}: een kap moet minstens ${Math.ceil(pc.ceil + 15)} mm hoog zijn.`);
+  if (kapPiece?.layer && 2 * kapTopR(kapPiece, c) > kapPiece.spec!.D + 0.5) {
+    notes.push(`${kapPiece.name}: breder gemaakt (Ø${(2 * kapTopR(kapPiece, c)).toFixed(0)} mm) zodat ${c.layered ? 'alle lagen, de tussenruimtes en ' : ''}de fitting erin passen.`);
+  }
   if (kapPiece && c.layered) {
     const need = kapPiece.ceil + (layers.count - 1) * LAYER_CEIL + 15;
     if (kapPiece.h < need) throw new UserError(`${kapPiece.name}: een kap met ${layers.count} lagen moet minstens ${Math.ceil(need)} mm hoog zijn.`);
