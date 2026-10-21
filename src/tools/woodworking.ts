@@ -366,7 +366,7 @@ function buildCenterEdge(ctx: Ctx): BuildOutput {
     const r = L.pinD / 2;
     const pin = M.Manifold.union([
       M.Manifold.cylinder(L.pinH - 0.8, r, r, 48).translate([0, 0, L.tb - 0.01]),
-      M.Manifold.cylinder(0.8, r, r - 0.8, 48).translate([0, 0, L.tb + L.pinH - 0.81]),
+      M.Manifold.cylinder(0.82, r, r - 0.8, 48).translate([0, 0, L.tb + L.pinH - 0.83]),
       M.Manifold.cylinder(1.5, r + 1.5, r, 48).translate([0, 0, L.tb - 0.01]),
     ]);
     solid = M.Manifold.union([solid, pin.translate([-L.s / 2, 0, 0]), pin.translate([L.s / 2, 0, 0])]);
@@ -650,7 +650,7 @@ export function drillLayout(p: Params) {
   const rMax = Math.max(...holes.map((h) => h.r));
   const Lx = holes[holes.length - 1].x + holes[holes.length - 1].half + 6;
   const yc = 2 + hl + 3 + rMax / ca + 1;
-  const Ly = yc + H * Math.tan(deg(alpha)) + rMax / ca + 6;
+  const Ly = Math.max(30, yc + H * Math.tan(deg(alpha)) + rMax / ca + 8);
   const vee = alpha === 0 && bool(p, 'dgVee');
   const gw = vee ? Math.max(0, Math.min(10, yc - 3, Ly - yc - 3, H - 8)) : 0;
   return { holes, alpha, H, clear, Lx, Ly, yc, hl, gw };
@@ -875,7 +875,7 @@ function buildFeather(ctx: Ctx): BuildOutput {
     if (y1 - y0 >= 6) outline = outline.subtract(M.CrossSection.union([slot(M, r, [F.Lb * 0.25, y0], [F.Lb * 0.25, y1]), slot(M, r, [F.Lb * 0.75, y0], [F.Lb * 0.75, y1])]));
     else ctx.warnings.push('Te smal voor stelsleuven: maak het veerbord breder.');
   }
-  const solid = fit(ctx, filletExtrude(M, outline, F.T, 0, 1), 'Veerbord');
+  const solid = fit(ctx, outline.extrude(F.T), 'Veerbord');
   ctx.tips.push(
     `De vingers wijzen ${fmt(F.phi)}° met de voedingsrichting mee: het werkstuk schuift erlangs maar kan niet terugslaan. Zet het veerbord zo dat de vingers 2–3 mm ingedrukt worden.`,
     str(p, 'fbMount') === 'tbolt'
@@ -948,7 +948,7 @@ function buildPyramid(ctx: Ctx): BuildOutput {
     name = 'Schilderskegel';
   } else {
     const n = style === 'pyramid4' ? 4 : 3;
-    const R = B / 2 / Math.cos(Math.PI / n);
+    const R = B / (2 * Math.sin(Math.PI / n));
     const pts: [number, number, number][] = [];
     for (let i = 0; i < n; i++) pts.push([R * Math.cos((i * 2 * Math.PI) / n), R * Math.sin((i * 2 * Math.PI) / n), 0]);
     pts.push([0, 0, H]);
@@ -1105,7 +1105,7 @@ export const woodworkingTool: ToolDef = {
     },
     { type: 'number', key: 'psLen', label: 'Lengte', min: 180, max: 420, step: 5, unit: 'mm', default: 300, show: is('pushStick') },
     { type: 'number', key: 'psHeel', label: 'Hoogte hak / inkeping', min: 3, max: 20, step: 0.5, unit: 'mm', default: 8, show: is('pushStick'), help: 'Iets lager dan je werkstuk dik is.' },
-    { type: 'number', key: 'psAngle', label: 'Schuinte steel', min: 20, max: 40, step: 1, unit: '°', default: 30, show: (p) => is('pushStick')(p) && str(p, 'psStyle') !== 'shoe' },
+    { type: 'number', key: 'psAngle', label: 'Schuinte steel', min: 20, max: 40, step: 1, unit: '°', default: 25, show: (p) => is('pushStick')(p) && str(p, 'psStyle') !== 'shoe' },
     { type: 'number', key: 'psThick', label: 'Dikte', min: 10, max: 25, step: 0.5, unit: 'mm', default: 15, show: is('pushStick'), help: 'Moet tussen zaagblad en aanslag passen.' },
 
     { type: 'group', label: 'Duwblok', show: is('pushBlock') },
@@ -1227,7 +1227,7 @@ export const woodworkingTool: ToolDef = {
         { value: 'cookie', label: 'Werkstukklos (rond, TPU)' },
       ],
     },
-    { type: 'number', key: 'pyBase', label: 'Breedte voet', min: 25, max: 90, step: 1, unit: 'mm', default: 50, show: is('pyramid') },
+    { type: 'number', key: 'pyBase', label: 'Breedte voet', min: 25, max: 90, step: 1, unit: 'mm', default: 50, show: is('pyramid'), help: 'Zijde van de piramide, diameter van kegel of klos.' },
     { type: 'number', key: 'pyHeight', label: 'Hoogte', min: 12, max: 60, step: 1, unit: 'mm', default: 30, show: is('pyramid'), help: 'Werkstukklos: maximaal 30 mm.' },
     { type: 'number', key: 'pyQty', label: 'Aantal', min: 1, max: 16, step: 1, default: 4, show: is('pyramid') },
   ],
