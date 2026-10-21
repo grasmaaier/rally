@@ -24,9 +24,11 @@ Verder:
 - **Doorsnede**-weergave om het binnenwerk te bekijken (handig bij de plantenpotten).
 - **Samengesteld / Printplaat**: bekijk het geheel of hoe de onderdelen op het bed liggen.
 - Controle of alles op de printer past, met een schatting van het filamentgebruik.
-- Export als **3MF** (alles of per printplaat) en **STL** (per onderdeel of alles).
+- Export als **3MF** (alles of per printplaat, met de filamentkleur per object) en **STL** (per onderdeel of alles).
 - Elke instelling staat in de link: met **Deel ontwerp** kopieer je een link naar precies dit ontwerp.
-- Andere Bambu-printers (H2D, A1, P1S/X1C/P2S, A1 mini) zijn ook te kiezen.
+- **Printerkeuze** rechtsboven: de hele Bambu Lab-reeks (A1 mini, A1, A2L, P1P, P1S, P2S, X1 Carbon, X1E, X2D, H2S, H2D en H2C; dual-nozzle printers ook met het kleinere bereik van beide nozzles samen). Pascontrole, plaatindeling, foutmeldingen en de printplaat in de viewer volgen de gekozen printer; de keuze wordt onthouden.
+- **Filamentkeuze** per onderdeel (of voor alles tegelijk) uit de Bambu Lab-filamenten: PLA Basic/Matte/Silk+/Translucent/Galaxy/Sparkle/Marble/Wood, PETG HF/Translucent/CF, ABS, ASA, TPU 95A HF, TPU for AMS, PC, PAHT-CF en Support for PLA/PETG, met de echte kleurnamen en -codes. De viewer toont de kleur, doorschijnend filament ook doorschijnend; lampenkappen stellen zelf PETG Translucent voor.
+- **Boodschappenlijst**: gewicht en meters per onderdeel met de dichtheid van het gekozen filament, hoeveel rollen per kleur je moet kopen (met % gebruikt en indicatieve prijs), tips voor transparant filament, waarschuwingen (PLA bij een lamp, ABS op een open printer, TPU of CF in de AMS lite) en of het aantal kleuren in de AMS van je printer past. Te kopiëren of te printen.
 - Licht en donker thema, werkt ook op telefoon en tablet.
 
 ## Starten

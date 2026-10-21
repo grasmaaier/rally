@@ -364,6 +364,8 @@ function renderFilament(plates = lastPlates) {
 
   renderFilamentPanel(res.parts, fils);
   renderShopping(list);
+  // designs that colour every part themselves ignore the quick colour picks
+  $('#swatches').hidden = res.parts.length > 1 && fils.every((x) => x.source !== 'all');
   renderSwatches();
 }
 
@@ -414,7 +416,8 @@ function renderFilamentPanel(parts: PartResult[], fils: { f: ResolvedFilament; s
       <select data-role="all-line" aria-label="Filamentsoort voor alle onderdelen">${lineOptions(all.line.id)}</select>
       <select data-role="all-color" aria-label="Kleur voor alle onderdelen">${colorOptions(all)}</select>
     </div>
-    <p class="fil-use">${escapeHtml(all.line.uses)}</p>`);
+    <p class="fil-use">${escapeHtml(all.line.uses)}</p>
+    ${parts.length > 1 && fils.every((x) => x.source !== 'all') ? '<p class="fil-use">Dit ontwerp kiest zelf een kleur per onderdeel (de dichtstbijzijnde echte filamentkleur); hier kies je de filamentsoort, per onderdeel ook een andere kleur.</p>' : ''}`);
   if (parts.length > 1) {
     parts.forEach((p, i) => {
       const { f, source } = fils[i];

@@ -223,7 +223,13 @@ body {
 }
 
 .printer select {
-  max-width: 270px;
+  max-width: 240px;
+}
+
+@media (max-width: 1600px) {
+  .printer-label {
+    display: none;
+  }
 }
 
 .icon-btn {
@@ -921,12 +927,10 @@ th:first-child {
 
 .fil-all {
   grid-template-columns: auto minmax(0, 1fr) auto;
-  grid-template-areas: 'dot line color';
+  grid-template-areas:
+    'name name name'
+    'dot line color';
   border-bottom: 0;
-}
-
-.fil-all .fil-name {
-  display: none;
 }
 
 .fil-all .dot {

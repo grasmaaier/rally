@@ -591,15 +591,28 @@ function rgb(hex: string): [number, number, number] {
   return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
 }
 
+/** sRGB hex → CIE L*a*b* (D65), for colour distances that match what people see. */
+function lab(hex: string): [number, number, number] {
+  const lin = (v: number) => {
+    const c = v / 255;
+    return c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
+  };
+  const [r, g, b] = rgb(hex).map(lin);
+  const x = (0.4124 * r + 0.3576 * g + 0.1805 * b) / 0.95047;
+  const y = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+  const z = (0.0193 * r + 0.1192 * g + 0.9505 * b) / 1.08883;
+  const f = (t: number) => (t > 216 / 24389 ? Math.cbrt(t) : (24389 / 27 * t + 16) / 116);
+  return [116 * f(y) - 16, 500 * (f(x) - f(y)), 200 * (f(y) - f(z))];
+}
+
 /** The colour of a line closest to a hex colour (e.g. a tool's suggested part colour). */
 export function nearestColor(line: FilamentLine, hex: string): FilamentColor {
-  const [r, g, b] = rgb(hex);
+  const [l, a, b] = lab(hex);
   let best = line.colors[0];
   let bestD = Infinity;
   for (const k of line.colors) {
-    const [r2, g2, b2] = rgb(k.hex);
-    // weighted RGB distance: close enough to how people perceive colour differences
-    const d = 2 * (r - r2) ** 2 + 4 * (g - g2) ** 2 + 3 * (b - b2) ** 2;
+    const [l2, a2, b2] = lab(k.hex);
+    const d = (l - l2) ** 2 + (a - a2) ** 2 + (b - b2) ** 2;
     if (d < bestD) {
       bestD = d;
       best = k;
