@@ -210,8 +210,20 @@ body {
   gap: 8px;
 }
 
+.printer {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.printer-label {
+  color: var(--muted);
+  font-size: 12.5px;
+  font-weight: 600;
+}
+
 .printer select {
-  max-width: 230px;
+  max-width: 270px;
 }
 
 .icon-btn {
@@ -677,6 +689,32 @@ input[type='range'] {
   box-shadow: 0 0 0 2px var(--accent);
 }
 
+/* translucent filament: a checkerboard shows through the colour */
+.swatch.see,
+.dot.see {
+  background:
+    linear-gradient(color-mix(in srgb, var(--c) 72%, transparent), color-mix(in srgb, var(--c) 72%, transparent)),
+    repeating-conic-gradient(#c9ced4 0 25%, #ffffff 0 50%) 0 0 / 8px 8px;
+}
+
+.dot {
+  display: inline-block;
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  background: var(--c);
+  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.22);
+  margin-right: 6px;
+  vertical-align: -1px;
+  flex: none;
+}
+
+.dot.big {
+  width: 16px;
+  height: 16px;
+  margin-right: 0;
+}
+
 /* ---------- output panel ---------- */
 
 .export {
@@ -820,6 +858,186 @@ th:first-child {
   color: var(--accent);
 }
 
+/* ---------- filament & shopping list ---------- */
+
+.filament {
+  display: grid;
+  gap: 6px;
+}
+
+.fil-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-areas:
+    'name name'
+    'line color';
+  align-items: center;
+  gap: 4px 6px;
+  padding: 6px 0;
+  border-bottom: 1px dashed var(--border);
+}
+
+.fil-row .fil-name {
+  grid-area: name;
+  font-weight: 600;
+  font-size: 13px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.fil-row .fil-name em {
+  font-style: normal;
+  font-weight: 500;
+  color: var(--muted);
+  font-size: 11.5px;
+  margin-left: 4px;
+}
+
+.fil-row .dot {
+  display: none;
+}
+
+.fil-row select {
+  padding: 5px 8px;
+  font-size: 13px;
+}
+
+.fil-row [data-role='line'],
+.fil-row [data-role='all-line'] {
+  grid-area: line;
+}
+
+.fil-row [data-role='color'],
+.fil-row [data-role='all-color'] {
+  grid-area: color;
+  max-width: 150px;
+}
+
+.fil-row [data-role='reset'] {
+  grid-column: 2;
+  justify-self: end;
+}
+
+.fil-all {
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  grid-template-areas: 'dot line color';
+  border-bottom: 0;
+}
+
+.fil-all .fil-name {
+  display: none;
+}
+
+.fil-all .dot {
+  display: inline-block;
+  grid-area: dot;
+}
+
+.fil-use,
+.fil-printer {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12.5px;
+}
+
+.fil-printer {
+  padding-top: 4px;
+}
+
+.part-fil {
+  display: flex;
+  align-items: center;
+}
+
+.shop-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.shop-actions {
+  display: flex;
+  gap: 6px;
+}
+
+table.shop td {
+  white-space: normal;
+  vertical-align: top;
+}
+
+table.shop td.shop-name {
+  min-width: 140px;
+}
+
+table.shop td:last-child,
+table.shop th:last-child {
+  text-align: right;
+}
+
+table.shop tfoot th {
+  color: var(--text);
+  border-bottom: 0;
+}
+
+.muted {
+  color: var(--muted);
+}
+
+.small {
+  font-size: 12px;
+}
+
+.shop-notes {
+  margin: 8px 0 0;
+  padding-left: 18px;
+  display: grid;
+  gap: 5px;
+  font-size: 12.5px;
+}
+
+.print-area {
+  display: none;
+}
+
+@media print {
+  #app {
+    display: none !important;
+  }
+
+  body {
+    background: #fff;
+    color: #000;
+  }
+
+  .print-area {
+    display: block;
+    font: 12pt/1.4 system-ui, sans-serif;
+    color: #000;
+  }
+
+  .print-area h1 {
+    font-size: 18pt;
+    margin: 0 0 4pt;
+  }
+
+  .print-area .muted {
+    color: #444;
+  }
+
+  .print-area .callout {
+    border: 1px solid #999;
+    background: none;
+    color: #000;
+  }
+
+  .print-area .dot {
+    print-color-adjust: exact;
+    -webkit-print-color-adjust: exact;
+  }
+}
+
 /* ---------- responsive ---------- */
 
 @media (max-width: 1240px) {
@@ -877,6 +1095,10 @@ th:first-child {
 
   .printer select {
     max-width: 170px;
+  }
+
+  .printer-label {
+    display: none;
   }
 
   .layout {
