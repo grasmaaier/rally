@@ -6,6 +6,7 @@ import { SCREWS, TAU, asMat4, clamp, countersunk, filletExtrude, fixingHole, hex
 import { noise3, sectionFn, solidOfSurface } from '../geom/surface';
 import { effectiveSpec, radialShape, shapeCross, type ShapeSpec } from '../geom/shapes2d';
 import { cushion, edgeRings, focusRings, gridSolid, polarGrid, radiiOf, rise, tubeSolid, type PolarGrid } from '../geom/pillow';
+import { WALLHOOK_PARAMS, WALLHOOK_PRESETS, knobHookInfo, wallHook } from './wallhooks';
 
 const SPACINGS = [64, 96, 128, 160, 192, 224, 256, 320];
 
@@ -157,7 +158,9 @@ const HEAD_USES: Record<string, HeadUse[]> = {
   custom: ['file'],
 };
 
-const isDesign = (p: Params) => str(p, 'type') === 'knob' && !CLASSIC_STYLES.includes(str(p, 'style'));
+/** A cabinet knob, or a wall hook shaped like one (same parameters, so a matching set). */
+const knobLike = (p: Params) => str(p, 'type') === 'knob' || (str(p, 'type') === 'wallhook' && str(p, 'whStyle') === 'knob');
+const isDesign = (p: Params) => knobLike(p) && !CLASSIC_STYLES.includes(str(p, 'style'));
 const headUses = (what: HeadUse) => (p: Params) => isDesign(p) && (HEAD_USES[str(p, 'style')] ?? []).includes(what);
 
 /** Domed by nature: these never get a flat top to print on. */
@@ -851,8 +854,15 @@ function cup(M: ManifoldToplevel, p: Params) {
   };
 }
 
-function build(p: Params, { M, assets }: Parameters<ToolDef['build']>[1]): BuildOutput {
+function build(p: Params, { M, assets, printer }: Parameters<ToolDef['build']>[1]): BuildOutput {
   const type = str(p, 'type');
+  if (type === 'wallhook' && str(p, 'whStyle') !== 'knob') {
+    const h = wallHook(M, p, printer);
+    const q = num(p, 'quantity');
+    const name = str(p, 'whStyle') === 'rail' ? 'Sleutelrekje' : str(p, 'whStyle') === 'peg' ? 'Wandpin' : 'Wandhaak';
+    const parts: PartOut[] = [{ name, solid: h.solid, quantity: q }, ...h.extra.map((x) => ({ ...x, quantity: (x.quantity ?? 1) * q }))];
+    return { parts, tips: h.tips, info: h.info, warnings: h.warnings };
+  }
   const barStyle = str(p, 'barStyle');
   const res: { solid: Manifold; tips: string[]; warnings?: string[]; extra?: PartOut[]; scene?: SceneItem[] } =
     type === 'bar'
@@ -871,17 +881,19 @@ function build(p: Params, { M, assets }: Parameters<ToolDef['build']>[1]): Build
             ? designKnob(M, p, assets)
             : knob(M, p);
   const tips = [...res.tips];
+  const hookInfo = type === 'wallhook' ? knobHookInfo(M, p) : null;
   const mount = str(p, 'mount');
   const s = SCREWS[str(p, 'screw')] ?? SCREWS.M4;
   if (type !== 'cup') {
     if (mount === 'insert') tips.push(`Druk een ${s.label} inzetmoer (Ø${s.insertD} mm) met de soldeerbout in het gat.`);
     else if (mount === 'nut') tips.push(`Druk een ${s.label} zeskantmoer in de uitsparing; schroef van binnenuit door de deur.`);
     else tips.push(`Het gat (Ø${s.pilot} mm) is voor een ${s.label} schroef die zijn eigen draad tapt — draai de eerste keer rustig in.`);
-    tips.push('Gebruik minimaal 4 wandlussen en 40% infill: dan scheurt de schroef er niet uit.');
+    if (!hookInfo) tips.push('Gebruik minimaal 4 wandlussen en 40% infill: dan scheurt de schroef er niet uit.');
   }
-  const info: BuildOutput['info'] = [];
-  if (type !== 'knob') info.push({ kind: 'kv', title: 'Maat', rows: [['Gatafstand (hart-op-hart)', `${spacing(p)} mm`]] });
-  const names: Record<string, string> = { knob: 'Knop', bar: 'Staafgreep', arch: 'Beugelgreep', cup: 'Schelpgreep' };
+  if (hookInfo) tips.push(...hookInfo.tips);
+  const info: BuildOutput['info'] = hookInfo ? [hookInfo.info] : [];
+  if (type !== 'knob' && !hookInfo) info.push({ kind: 'kv', title: 'Maat', rows: [['Gatafstand (hart-op-hart)', `${spacing(p)} mm`]] });
+  const names: Record<string, string> = { wallhook: 'Wandknop', knob: 'Knop', bar: 'Staafgreep', arch: 'Beugelgreep', cup: 'Schelpgreep' };
   const q = num(p, 'quantity');
   const parts: PartOut[] = [{ name: names[type] ?? 'Greep', solid: res.solid, quantity: q }];
   for (const x of res.extra ?? []) parts.push({ ...x, quantity: (x.quantity ?? 1) * q });
@@ -901,7 +913,7 @@ export const handlesTool: ToolDef = {
   name: 'Knoppen & grepen',
   short: 'Grepen',
   icon: 'M5 15V11a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2v4M8 9V7M16 9V7M3 15h18',
-  description: 'Meubelknoppen en -grepen met standaard gatafstanden (64–320 mm) en gaten voor M3/M4/M5 schroeven, moeren of inzetmoeren. Ook speelse knoppen (kruis, bloem, blob, kiezel, donut of je eigen SVG) en gedraaide, golvende of organische grepen.',
+  description: 'Meubelknoppen en -grepen met standaard gatafstanden (64–320 mm) en gaten voor M3/M4/M5 schroeven, moeren of inzetmoeren. Ook speelse knoppen (kruis, bloem, blob, kiezel, donut of je eigen SVG), gedraaide, golvende of organische grepen en wandhaken: kapstok, jashaak, J-haak, sleutelrekje, pin of een haak in dezelfde vorm als je knoppen.',
   params: [
     { type: 'group', label: 'Type' },
     {
@@ -911,12 +923,14 @@ export const handlesTool: ToolDef = {
         { value: 'bar', label: 'Staafgreep' },
         { value: 'arch', label: 'Beugelgreep (D-greep)' },
         { value: 'cup', label: 'Schelpgreep (lade)' },
+        { value: 'wallhook', label: 'Wandhaak (aan de muur)' },
       ],
     },
     { type: 'number', key: 'quantity', label: 'Aantal', min: 1, max: 40, step: 1, default: 1 },
-    { type: 'group', label: 'Knop', show: is('knob') },
+    ...WALLHOOK_PARAMS,
+    { type: 'group', label: 'Knop', show: knobLike },
     {
-      type: 'select', key: 'style', label: 'Model', default: 'mushroom', show: is('knob'),
+      type: 'select', key: 'style', label: 'Model', default: 'mushroom', show: knobLike,
       options: [
         { value: 'mushroom', label: 'Paddenstoel' },
         { value: 'cylinder', label: 'Cilinder' },
@@ -925,10 +939,10 @@ export const handlesTool: ToolDef = {
         ...DESIGN_STYLES,
       ],
     },
-    { type: 'number', key: 'knobD', label: 'Diameter / breedte', min: 15, max: 80, step: 0.5, unit: 'mm', default: 32, show: is('knob') },
-    { type: 'number', key: 'knobH', label: 'Hoogte', min: 12, max: 60, step: 0.5, unit: 'mm', default: 26, show: is('knob') },
-    { type: 'number', key: 'baseD', label: 'Diameter voet', min: 8, max: 60, step: 0.5, unit: 'mm', default: 18, show: is('knob') },
-    { type: 'number', key: 'neckD', label: 'Diameter hals', min: 6, max: 50, step: 0.5, unit: 'mm', default: 13, show: is('knob') },
+    { type: 'number', key: 'knobD', label: 'Diameter / breedte', min: 15, max: 80, step: 0.5, unit: 'mm', default: 32, show: knobLike },
+    { type: 'number', key: 'knobH', label: 'Hoogte', min: 12, max: 60, step: 0.5, unit: 'mm', default: 26, show: knobLike },
+    { type: 'number', key: 'baseD', label: 'Diameter voet', min: 8, max: 60, step: 0.5, unit: 'mm', default: 18, show: knobLike },
+    { type: 'number', key: 'neckD', label: 'Diameter hals', min: 6, max: 50, step: 0.5, unit: 'mm', default: 13, show: knobLike },
     { type: 'number', key: 'headH', label: 'Dikte kop', min: 4, max: 30, step: 0.5, unit: 'mm', default: 10, show: isDesign },
     {
       type: 'number', key: 'puff', label: 'Bolling (kussen)', min: 0, max: 100, step: 5, unit: '%', default: 60, show: isDesign,
@@ -948,10 +962,10 @@ export const handlesTool: ToolDef = {
       help: 'Een gevulde vorm; de buitencontour wordt de kop (passend geschaald). Dunne delen worden afgerond tot minstens 4 mm.',
     },
     { type: 'number', key: 'headAngle', label: 'Draai kop', min: 0, max: 180, step: 5, unit: '°', default: 0, show: (p) => isDesign(p) && str(p, 'style') !== 'ring' },
-    { type: 'number', key: 'dome', label: 'Bolling bovenkant', min: 0, max: 100, step: 5, unit: '%', default: 0, show: (p) => is('knob')(p) && !isDesign(p) },
-    { type: 'number', key: 'edge', label: 'Afronding rand', min: 0, max: 10, step: 0.5, unit: 'mm', default: 3, show: is('knob') },
+    { type: 'number', key: 'dome', label: 'Bolling bovenkant', min: 0, max: 100, step: 5, unit: '%', default: 0, show: (p) => knobLike(p) && !isDesign(p) },
+    { type: 'number', key: 'edge', label: 'Afronding rand', min: 0, max: 10, step: 0.5, unit: 'mm', default: 3, show: knobLike },
     {
-      type: 'select', key: 'pattern', label: 'Grip', default: 'smooth', show: (p) => is('knob')(p) && !isDesign(p),
+      type: 'select', key: 'pattern', label: 'Grip', default: 'smooth', show: (p) => knobLike(p) && !isDesign(p),
       options: [
         { value: 'smooth', label: 'Glad' },
         { value: 'ribs', label: 'Ribbels' },
@@ -959,10 +973,10 @@ export const handlesTool: ToolDef = {
         { value: 'knurl', label: 'Kartel (ruit)' },
       ],
     },
-    { type: 'number', key: 'patternCount', label: 'Aantal', min: 3, max: 40, step: 1, default: 12, show: (p) => is('knob')(p) && !isDesign(p) && str(p, 'pattern') !== 'smooth' },
-    { type: 'number', key: 'patternDepth', label: 'Diepte', min: 1, max: 20, step: 1, unit: '%', default: 6, show: (p) => is('knob')(p) && !isDesign(p) && ['ribs', 'knurl'].includes(str(p, 'pattern')) },
+    { type: 'number', key: 'patternCount', label: 'Aantal', min: 3, max: 40, step: 1, default: 12, show: (p) => knobLike(p) && !isDesign(p) && str(p, 'pattern') !== 'smooth' },
+    { type: 'number', key: 'patternDepth', label: 'Diepte', min: 1, max: 20, step: 1, unit: '%', default: 6, show: (p) => knobLike(p) && !isDesign(p) && ['ribs', 'knurl'].includes(str(p, 'pattern')) },
     {
-      type: 'select', key: 'orient', label: 'Printstand', default: 'auto', show: is('knob'),
+      type: 'select', key: 'orient', label: 'Printstand', default: 'auto', show: knobLike,
       options: [
         { value: 'auto', label: 'Automatisch' },
         { value: 'top', label: 'Bovenkant op bed' },
@@ -1041,9 +1055,9 @@ export const handlesTool: ToolDef = {
     { type: 'number', key: 'cupDepth', label: 'Diepte schelp', min: 10, max: 30, step: 1, unit: 'mm', default: 18, show: is('cup') },
     { type: 'number', key: 'cupMargin', label: 'Ruimte rond schroef', min: 6, max: 20, step: 1, unit: 'mm', default: 9, show: is('cup') },
     { type: 'number', key: 'cupWall', label: 'Wanddikte', min: 1.6, max: 4, step: 0.2, unit: 'mm', default: 2.4, show: is('cup') },
-    { type: 'group', label: 'Bevestiging', show: is('knob', 'bar', 'arch') },
+    { type: 'group', label: 'Bevestiging', show: (p) => is('knob', 'bar', 'arch')(p) || knobLike(p) || (is('wallhook')(p) && ['screws', 'keyhole', 'insert'].includes(str(p, 'whMount'))) },
     {
-      type: 'select', key: 'screw', label: 'Schroefmaat', default: 'M4', show: is('knob', 'bar', 'arch'),
+      type: 'select', key: 'screw', label: 'Schroefmaat', default: 'M4', show: (p) => is('knob', 'bar', 'arch')(p) || knobLike(p) || (is('wallhook')(p) && ['screws', 'keyhole', 'insert'].includes(str(p, 'whMount'))),
       options: [
         { value: 'M3', label: 'M3' },
         { value: 'M4', label: 'M4 (standaard meubel)' },
@@ -1051,7 +1065,7 @@ export const handlesTool: ToolDef = {
       ],
     },
     {
-      type: 'select', key: 'mount', label: 'Methode', default: 'tap', show: is('knob', 'bar', 'arch'),
+      type: 'select', key: 'mount', label: 'Methode', default: 'tap', show: (p) => is('knob', 'bar', 'arch')(p) || knobLike(p),
       options: [
         { value: 'tap', label: 'Schroef tapt zelf' },
         { value: 'nut', label: 'Ingeklemde moer' },
@@ -1086,6 +1100,7 @@ export const handlesTool: ToolDef = {
     { name: 'Takgreep 160', values: { type: 'bar', barStyle: 'branch', spacing: '160', overhang: 22, barD: 16, standoff: 22, postD: 12, branchKnots: 60, branchSeed: 12 } },
     { name: 'Golfbeugel 128', values: { type: 'arch', spacing: '128', archShape: 'wave', clearance: 26, archT: 10, archW: 14, archWave: 9 } },
     { name: 'Lusgreep 96', values: { type: 'arch', spacing: '96', archShape: 'loop', clearance: 26, archT: 9, archW: 12, loopD: 28 } },
+    ...WALLHOOK_PRESETS,
   ],
   randomize: () => {
     const r = (a: number, b: number, step = 1) => Math.round((a + Math.random() * (b - a)) / step) * step;
