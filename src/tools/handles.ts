@@ -1,12 +1,14 @@
 import type { CrossSection, Manifold, ManifoldToplevel, Vec2, Vec3 } from 'manifold-3d';
-import type { AssetRef, AssetStore, BuildOutput, Params, PartOut, SceneItem, ToolDef } from '../core/types';
+import type { AssetRef, AssetStore, BuildOutput, InfoBlock, ParamDef, Params, PartOut, PrinterProfile, SceneItem, ToolDef } from '../core/types';
 import { num, str } from '../core/types';
 import { keep } from '../core/registry';
-import { SCREWS, TAU, asMat4, clamp, countersunk, filletExtrude, fixingHole, hexagon, lerp, roundedRect, rotZ, smoothstep, teardrop, translation } from '../geom/helpers';
+import { SCREWS, TAU, asMat4, clamp, countersunk, filletExtrude, fixingHole, hexagon, identity, lerp, mul, roundedRect, rotX, rotZ, smoothstep, teardrop, translation, type M4 } from '../geom/helpers';
 import { noise3, sectionFn, solidOfSurface } from '../geom/surface';
 import { effectiveSpec, radialShape, shapeCross, type ShapeSpec } from '../geom/shapes2d';
 import { cushion, edgeRings, focusRings, gridSolid, polarGrid, radiiOf, rise, tubeSolid, type PolarGrid } from '../geom/pillow';
 import { WALLHOOK_PARAMS, WALLHOOK_PRESETS, knobHookInfo, wallHook } from './wallhooks';
+import { KID_COLORS, KID_SHAPES, KID_USES, buildKid, type KidSpec, type KidUse } from './kidsKnobs';
+import { printSettingsOf, type PrintProfile } from './organizers';
 
 const SPACINGS = [64, 96, 128, 160, 192, 224, 256, 320];
 
@@ -854,8 +856,174 @@ function cup(M: ManifoldToplevel, p: Params) {
   };
 }
 
+// ---------------------------------------------------------------------------
+// Playful knobs for a kids' room, and sets of different knobs on one plate
+
+/** How the screw goes in. */
+function mountTip(p: Params) {
+  const mount = str(p, 'mount');
+  const s = SCREWS[str(p, 'screw')] ?? SCREWS.M4;
+  if (mount === 'insert') return `Druk een ${s.label} inzetmoer (Ø${s.insertD} mm) met de soldeerbout in het gat.`;
+  if (mount === 'nut') return `Druk een ${s.label} zeskantmoer in de uitsparing; schroef van binnenuit door de deur.`;
+  return `Het gat (Ø${s.pilot} mm) is voor een ${s.label} schroef die zijn eigen draad tapt — draai de eerste keer rustig in.`;
+}
+
+const KNOB_PRINT: PrintProfile = {
+  material: 'PLA Matte (zachte pastelkleuren, verbergt laaglijnen)',
+  layer: '0,12 mm (de gladste bolle bovenkanten)',
+  walls: 4,
+  topBottom: '6 boven / 5 onder',
+  infill: '40% gyroid (houvast voor de schroef)',
+  seam: 'Achterkant; "scarf seam" maakt de naad op ronde vormen bijna onzichtbaar',
+  extra: 'Wandvolgorde binnen/buiten (standaard) laten staan: dan worden de 45°-onderkanten het mooist',
+};
+
+/** Pillow knobs that suit the set, at their own preset proportions (scaled to the set width). */
+const SET_DESIGNS: Record<string, { label: string; values: Params }> = {
+  star: { label: 'Ster', values: { knobD: 36, knobH: 26, baseD: 18, neckD: 13, headH: 9, puff: 55, edge: 3, headCount: 5, headDepth: 38, headRounding: 80, headAngle: 90 } },
+  heart: { label: 'Hart', values: { knobD: 34, knobH: 26, baseD: 18, neckD: 13, headH: 10, puff: 70, edge: 3, headAngle: 0 } },
+  cloud: { label: 'Wolk', values: { knobD: 38, knobH: 26, baseD: 18, neckD: 13, headH: 10, puff: 75, edge: 3, headCount: 6, headDepth: 45, headSeed: 4, headAngle: 0 } },
+  bloom: { label: 'Bloem', values: { knobD: 36, knobH: 28, baseD: 18, neckD: 13, headH: 12, puff: 60, edge: 3, headCount: 5, headDepth: 55, headRounding: 70, headAngle: 90 } },
+};
+const SET_SHAPES = [...KID_SHAPES, ...Object.entries(SET_DESIGNS).map(([value, d]) => ({ value, label: `${d.label} (kussenknop)` }))];
+const SET_SLOTS = [
+  { shape: 'donut', color: '#e8afcf' },
+  { shape: 'bellen', color: '#a3d8e1' },
+  { shape: 'beer', color: '#f7d959' },
+  { shape: 'toren', color: '#c2e189' },
+  { shape: 'paddenstoel', color: '#ae96d4' },
+  { shape: 'regenboog', color: '#f99963' },
+];
+
+const setCount = (p: Params) => clamp(Math.round(num(p, 'setCount')), 2, SET_SLOTS.length);
+const slotOn = (i: number) => (p: Params) => str(p, 'type') === 'set' && i <= setCount(p);
+/** Shapes in use: the single playful knob, or every shape of the set. */
+const kidShapesOf = (p: Params): string[] =>
+  str(p, 'type') === 'kids' ? [str(p, 'kidShape')] : str(p, 'type') === 'set' ? Array.from({ length: setCount(p) || 0 }, (_, i) => str(p, `set${i + 1}Shape`)) : [];
+const kidUses = (what: KidUse) => (p: Params) => kidShapesOf(p).some((s) => KID_USES[s] === what);
+
+const kidSpecOf = (p: Params, shape: string): KidSpec => ({
+  shape,
+  D: num(p, 'kidD'),
+  tall: num(p, 'kidTall') / 100,
+  rings: num(p, 'kidRings'),
+  petals: num(p, 'kidPetals'),
+  bands: num(p, 'kidBands'),
+  dots: num(p, 'kidDots'),
+  screw: str(p, 'screw'),
+  mount: str(p, 'mount'),
+});
+
+const mm = (v: number) => v.toFixed(1).replace('.', ',');
+
+function kidsKnob(M: ManifoldToplevel, p: Params, printer: PrinterProfile): BuildOutput {
+  const shape = str(p, 'kidShape');
+  const k = buildKid(M, kidSpecOf(p, shape));
+  const tips = [...k.tips, mountTip(p)];
+  const info: InfoBlock[] = [];
+  if (k.colors.length > 1) {
+    info.push({
+      kind: 'kv',
+      title: 'Kleurwissels (optioneel)',
+      rows: k.colors.map((c): [string, string] => [c.from < 0.05 ? 'Begin' : `vanaf ${mm(c.from)} mm`, `${c.what} – bv. ${c.color}`]),
+    });
+    tips.push('Meer kleuren in één knop: schuif in Bambu Studio de laagschuif naar een hoogte uit "Kleurwissels", klik op "+" en kies het volgende filament (met een AMS wisselt hij vanzelf).');
+  }
+  const settings = printSettingsOf(KNOB_PRINT, printer, { multicolor: k.colors.length > 1 });
+  info.push(settings.info);
+  return {
+    parts: [{ name: KID_SHAPES.find((s) => s.value === shape)?.label ?? 'Knop', solid: k.solid, quantity: num(p, 'quantity'), material: 'pla-matte' }],
+    tips: [...tips, ...settings.tips],
+    info,
+    warnings: k.warnings,
+  };
+}
+
+/** Different knobs, each in its own colour, on one plate; shown side by side on a cabinet door. */
+function knobSet(M: ManifoldToplevel, p: Params, printer: PrinterProfile): BuildOutput {
+  const D = num(p, 'kidD');
+  const tall = num(p, 'kidTall') / 100;
+  const parts: PartOut[] = [];
+  const warnings: string[] = [];
+  const rows: (string | number)[][] = [];
+  const toUse: M4[] = [];
+  for (let i = 1; i <= setCount(p); i++) {
+    const shape = str(p, `set${i}Shape`);
+    const color = str(p, `set${i}Color`);
+    const qty = num(p, `set${i}Qty`);
+    const design = SET_DESIGNS[shape];
+    const name = `${i} · ${design?.label ?? KID_SHAPES.find((s) => s.value === shape)?.label ?? shape}`;
+    let solid: Manifold;
+    let notes: string[];
+    if (design) {
+      const v = design.values;
+      const f = D / num(v, 'knobD');
+      const d = designKnob(M, {
+        ...p,
+        ...v,
+        type: 'knob',
+        style: shape,
+        orient: 'auto',
+        knobD: D,
+        knobH: clamp(num(v, 'knobH') * f * tall, 12, 60),
+        baseD: clamp(num(v, 'baseD') * f, 8, 60),
+        neckD: clamp(num(v, 'neckD') * f, 6, 50),
+        headH: clamp(num(v, 'headH') * f, 4, 30),
+        edge: clamp(num(v, 'edge') * f, 0, 10),
+      });
+      solid = d.solid;
+      notes = d.warnings;
+      // printed on its top it is turned over; turn it back for the door
+      toUse.push(solid.boundingBox().max[2] <= 0.01 ? rotX(180) : identity());
+    } else {
+      const k = buildKid(M, kidSpecOf(p, shape));
+      solid = k.solid;
+      notes = k.warnings;
+      toUse.push(k.toUse);
+    }
+    warnings.push(...notes.map((w) => `${name}: ${w}`));
+    parts.push({ name, solid, quantity: qty, color, material: 'pla-matte' });
+    rows.push([name, KID_COLORS.find((c) => c.value === color)?.label ?? color, qty]);
+  }
+
+  // the door stands up behind the knobs (front towards -y); the knobs in a row
+  const gap = 14;
+  const boxes = parts.map((pt, i) => pt.solid.transform(asMat4(toUse[i])).boundingBox());
+  const widths = boxes.map((b) => b.max[0] - b.min[0]);
+  const total = widths.reduce((a, w) => a + w, 0) + gap * (parts.length - 1);
+  const doorW = total + 40;
+  const doorH = Math.max(...boxes.map((b) => b.max[1] - b.min[1])) + 40;
+  const scene: SceneItem[] = [{ kind: 'box', size: [doorW, 18, doorH], position: [-doorW / 2, 0, -doorH / 2], color: '#b98b5f', material: 'wood', label: 'Kastdeur' }];
+  let x = -total / 2;
+  boxes.forEach((b, i) => {
+    const onDoor = translation(x + widths[i] / 2 - (b.min[0] + b.max[0]) / 2, -(b.min[1] + b.max[1]) / 2, 0);
+    scene.push({ kind: 'part', part: i, matrix: mul(rotX(90), mul(onDoor, toUse[i])) });
+    x += widths[i] + gap;
+  });
+
+  const settings = printSettingsOf(KNOB_PRINT, printer, { multicolor: true });
+  return {
+    parts,
+    scene,
+    defaultView: 'plate',
+    warnings,
+    info: [{ kind: 'table', title: 'Set', headers: ['Knop', 'Kleur (PLA Matte)', 'Aantal'], rows }, settings.info],
+    tips: [
+      'Elke knop heeft zijn eigen kleur in de 3MF en op de boodschappenlijst. Kies in Bambu Studio per knop het filament in de objectenlijst; met een AMS print je de hele set in één keer.',
+      'Minder spoelafval: zet in Bambu Studio de afdrukvolgorde (Print sequence) op "Per object" als je printer dat toestaat. Dan wisselt hij één keer per knop van kleur in plaats van op elke laag.',
+      'Zonder AMS: zet de knoppen per kleur op een eigen plaat en print die na elkaar.',
+      'Een kleurwissel op een laaghoogte (zoals het glazuur van de donut) geldt voor de hele plaat: print zo\'n knop los via "Speelse knop".',
+      'Alles print zonder support: de speelse vormen met de deurkant op het bed (de bijenkorf met de voorkant), de kussenknoppen op hun voet of hun vlakke bovenkant.',
+      mountTip(p),
+      ...settings.tips,
+    ],
+  };
+}
+
 function build(p: Params, { M, assets, printer }: Parameters<ToolDef['build']>[1]): BuildOutput {
   const type = str(p, 'type');
+  if (type === 'kids') return kidsKnob(M, p, printer);
+  if (type === 'set') return knobSet(M, p, printer);
   if (type === 'wallhook' && str(p, 'whStyle') !== 'knob') {
     const h = wallHook(M, p, printer);
     const q = num(p, 'quantity');
@@ -882,12 +1050,8 @@ function build(p: Params, { M, assets, printer }: Parameters<ToolDef['build']>[1
             : knob(M, p);
   const tips = [...res.tips];
   const hookInfo = type === 'wallhook' ? knobHookInfo(M, p) : null;
-  const mount = str(p, 'mount');
-  const s = SCREWS[str(p, 'screw')] ?? SCREWS.M4;
   if (type !== 'cup') {
-    if (mount === 'insert') tips.push(`Druk een ${s.label} inzetmoer (Ø${s.insertD} mm) met de soldeerbout in het gat.`);
-    else if (mount === 'nut') tips.push(`Druk een ${s.label} zeskantmoer in de uitsparing; schroef van binnenuit door de deur.`);
-    else tips.push(`Het gat (Ø${s.pilot} mm) is voor een ${s.label} schroef die zijn eigen draad tapt — draai de eerste keer rustig in.`);
+    tips.push(mountTip(p));
     if (!hookInfo) tips.push('Gebruik minimaal 4 wandlussen en 40% infill: dan scheurt de schroef er niet uit.');
   }
   if (hookInfo) tips.push(...hookInfo.tips);
@@ -913,20 +1077,22 @@ export const handlesTool: ToolDef = {
   name: 'Knoppen & grepen',
   short: 'Grepen',
   icon: 'M5 15V11a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2v4M8 9V7M16 9V7M3 15h18',
-  description: 'Meubelknoppen en -grepen met standaard gatafstanden (64–320 mm) en gaten voor M3/M4/M5 schroeven, moeren of inzetmoeren. Ook speelse knoppen (kruis, bloem, blob, kiezel, donut of je eigen SVG), gedraaide, golvende of organische grepen en wandhaken: kapstok, jashaak, J-haak, sleutelrekje, pin of een haak in dezelfde vorm als je knoppen.',
+  description: 'Meubelknoppen en -grepen met standaard gatafstanden (64–320 mm) en gaten voor M3/M4/M5 schroeven, moeren of inzetmoeren. Ook speelse knoppen (kruis, bloem, blob, kiezel, donut of je eigen SVG), kinderkamerknoppen (donut met glazuur, macaron, stapeltoren, bijenkorf, bellenbloem, berenkop, paddenstoel met stippen, regenboog, bal op blokje), een set van verschillende knoppen in eigen kleuren die samen op één plaat printen, gedraaide, golvende of organische grepen en wandhaken: kapstok, jashaak, J-haak, sleutelrekje, pin of een haak in dezelfde vorm als je knoppen.',
   params: [
     { type: 'group', label: 'Type' },
     {
       type: 'select', key: 'type', label: 'Soort', default: 'knob',
       options: [
         { value: 'knob', label: 'Knop' },
+        { value: 'kids', label: 'Speelse knop (kinderkamer)' },
+        { value: 'set', label: 'Set: verschillende knoppen tegelijk' },
         { value: 'bar', label: 'Staafgreep' },
         { value: 'arch', label: 'Beugelgreep (D-greep)' },
         { value: 'cup', label: 'Schelpgreep (lade)' },
         { value: 'wallhook', label: 'Wandhaak (aan de muur)' },
       ],
     },
-    { type: 'number', key: 'quantity', label: 'Aantal', min: 1, max: 40, step: 1, default: 1 },
+    { type: 'number', key: 'quantity', label: 'Aantal', min: 1, max: 40, step: 1, default: 1, show: (p) => str(p, 'type') !== 'set' },
     ...WALLHOOK_PARAMS,
     { type: 'group', label: 'Knop', show: knobLike },
     {
@@ -983,6 +1149,31 @@ export const handlesTool: ToolDef = {
         { value: 'base', label: 'Voet op bed' },
       ],
     },
+    { type: 'group', label: 'Speelse knop', show: is('kids', 'set') },
+    { type: 'select', key: 'kidShape', label: 'Vorm', default: 'donut', show: is('kids'), options: KID_SHAPES },
+    { type: 'number', key: 'kidD', label: 'Breedte', min: 20, max: 60, step: 1, unit: 'mm', default: 34, show: is('kids', 'set') },
+    {
+      type: 'number', key: 'kidTall', label: 'Hoogte', min: 70, max: 140, step: 5, unit: '%', default: 100, show: is('kids', 'set'),
+      help: '100% = de eigen verhouding van de vorm. Lager wordt platter, hoger steekt verder uit.',
+    },
+    { type: 'number', key: 'kidRings', label: 'Aantal ringen', min: 3, max: 6, step: 1, default: 4, show: kidUses('rings') },
+    { type: 'number', key: 'kidPetals', label: 'Aantal bellen', min: 5, max: 8, step: 1, default: 6, show: kidUses('petals') },
+    { type: 'number', key: 'kidBands', label: 'Aantal bogen (regenboog)', min: 3, max: 5, step: 1, default: 4, show: kidUses('bands') },
+    { type: 'number', key: 'kidDots', label: 'Aantal stippen', min: 0, max: 9, step: 1, default: 6, show: kidUses('dots') },
+    { type: 'group', label: 'Set', show: is('set') },
+    {
+      type: 'number', key: 'setCount', label: 'Verschillende knoppen', min: 2, max: SET_SLOTS.length, step: 1, default: 4, show: is('set'),
+      help: 'Elke knop krijgt een eigen vorm, kleur en aantal; ze komen samen op één printplaat.',
+    },
+    ...SET_SLOTS.flatMap((d, k): ParamDef[] => {
+      const i = k + 1;
+      return [
+        { type: 'group', label: `Knop ${i}`, show: slotOn(i) },
+        { type: 'select', key: `set${i}Shape`, label: 'Vorm', default: d.shape, show: slotOn(i), options: SET_SHAPES },
+        { type: 'select', key: `set${i}Color`, label: 'Kleur (PLA Matte)', default: d.color, show: slotOn(i), options: KID_COLORS },
+        { type: 'number', key: `set${i}Qty`, label: 'Aantal', min: 1, max: 20, step: 1, default: 2, show: slotOn(i) },
+      ];
+    }),
     { type: 'group', label: 'Maat', show: is('bar', 'arch', 'cup') },
     {
       type: 'select', key: 'spacing', label: 'Gatafstand (hart-op-hart)', default: '128', show: is('bar', 'arch', 'cup'),
@@ -1055,9 +1246,9 @@ export const handlesTool: ToolDef = {
     { type: 'number', key: 'cupDepth', label: 'Diepte schelp', min: 10, max: 30, step: 1, unit: 'mm', default: 18, show: is('cup') },
     { type: 'number', key: 'cupMargin', label: 'Ruimte rond schroef', min: 6, max: 20, step: 1, unit: 'mm', default: 9, show: is('cup') },
     { type: 'number', key: 'cupWall', label: 'Wanddikte', min: 1.6, max: 4, step: 0.2, unit: 'mm', default: 2.4, show: is('cup') },
-    { type: 'group', label: 'Bevestiging', show: (p) => is('knob', 'bar', 'arch')(p) || knobLike(p) || (is('wallhook')(p) && ['screws', 'keyhole', 'insert'].includes(str(p, 'whMount'))) },
+    { type: 'group', label: 'Bevestiging', show: (p) => is('knob', 'kids', 'set', 'bar', 'arch')(p) || knobLike(p) || (is('wallhook')(p) && ['screws', 'keyhole', 'insert'].includes(str(p, 'whMount'))) },
     {
-      type: 'select', key: 'screw', label: 'Schroefmaat', default: 'M4', show: (p) => is('knob', 'bar', 'arch')(p) || knobLike(p) || (is('wallhook')(p) && ['screws', 'keyhole', 'insert'].includes(str(p, 'whMount'))),
+      type: 'select', key: 'screw', label: 'Schroefmaat', default: 'M4', show: (p) => is('knob', 'kids', 'set', 'bar', 'arch')(p) || knobLike(p) || (is('wallhook')(p) && ['screws', 'keyhole', 'insert'].includes(str(p, 'whMount'))),
       options: [
         { value: 'M3', label: 'M3' },
         { value: 'M4', label: 'M4 (standaard meubel)' },
@@ -1065,7 +1256,7 @@ export const handlesTool: ToolDef = {
       ],
     },
     {
-      type: 'select', key: 'mount', label: 'Methode', default: 'tap', show: (p) => is('knob', 'bar', 'arch')(p) || knobLike(p),
+      type: 'select', key: 'mount', label: 'Methode', default: 'tap', show: (p) => is('knob', 'kids', 'set', 'bar', 'arch')(p) || knobLike(p),
       options: [
         { value: 'tap', label: 'Schroef tapt zelf' },
         { value: 'nut', label: 'Ingeklemde moer' },
@@ -1093,6 +1284,36 @@ export const handlesTool: ToolDef = {
     { name: 'Donutknop', values: { type: 'knob', style: 'ring', knobD: 34, knobH: 26, baseD: 18, neckD: 13, headH: 10, ringHole: 40 } },
     { name: 'Tandwielknop (vlak)', values: { type: 'knob', style: 'gear', knobD: 36, knobH: 24, baseD: 20, neckD: 14, headH: 8, puff: 0, edge: 1.5, headCount: 9, headDepth: 22 } },
     { name: 'Klaverknop (vlak)', values: { type: 'knob', style: 'clover', knobD: 36, knobH: 24, baseD: 20, neckD: 14, headH: 8, puff: 0, edge: 2.5, headCount: 4, headDepth: 35, headAngle: 45 } },
+    {
+      name: 'Kinderkamer-set',
+      values: {
+        type: 'set', kidD: 34, kidTall: 100, setCount: 4,
+        set1Shape: 'donut', set1Color: '#e8afcf', set1Qty: 2, set2Shape: 'bellen', set2Color: '#a3d8e1', set2Qty: 2,
+        set3Shape: 'beer', set3Color: '#d3b7a7', set3Qty: 2, set4Shape: 'toren', set4Color: '#c2e189', set4Qty: 2,
+      },
+    },
+    {
+      name: 'Pastel-set (blokjes en ballen)',
+      values: {
+        type: 'set', kidD: 32, kidTall: 100, setCount: 3,
+        set1Shape: 'blokbol', set1Color: '#a3d8e1', set1Qty: 2, set2Shape: 'cilbol', set2Color: '#e8afcf', set2Qty: 2, set3Shape: 'zeskant', set3Color: '#ae96d4', set3Qty: 2,
+      },
+    },
+    {
+      name: 'Sterren-en-wolkenset',
+      values: {
+        type: 'set', kidD: 34, kidTall: 100, setCount: 3,
+        set1Shape: 'star', set1Color: '#f7d959', set1Qty: 2, set2Shape: 'cloud', set2Color: '#a3d8e1', set2Qty: 2, set3Shape: 'heart', set3Color: '#e8afcf', set3Qty: 2,
+      },
+    },
+    { name: 'Donut met glazuur', values: { type: 'kids', kidShape: 'donut', kidD: 36, kidTall: 100 } },
+    { name: 'Macaron', values: { type: 'kids', kidShape: 'macaron', kidD: 34, kidTall: 100 } },
+    { name: 'Stapeltoren', values: { type: 'kids', kidShape: 'toren', kidD: 34, kidTall: 100, kidRings: 4 } },
+    { name: 'Bijenkorf', values: { type: 'kids', kidShape: 'korf', kidD: 34, kidTall: 100, kidRings: 4 } },
+    { name: 'Bellenbloem', values: { type: 'kids', kidShape: 'bellen', kidD: 38, kidTall: 100, kidPetals: 6 } },
+    { name: 'Berenkop', values: { type: 'kids', kidShape: 'beer', kidD: 38, kidTall: 100 } },
+    { name: 'Paddenstoel met stippen', values: { type: 'kids', kidShape: 'paddenstoel', kidD: 36, kidTall: 100, kidDots: 6 } },
+    { name: 'Regenboogknop', values: { type: 'kids', kidShape: 'regenboog', kidD: 44, kidTall: 100, kidBands: 4 } },
     { name: 'Gedraaide staaf 128', values: { type: 'bar', barStyle: 'twisted', spacing: '128', overhang: 18, barD: 14, standoff: 22, postD: 12, twistSection: 'square', barTwist: 180 } },
     { name: 'Gedraaide ster 160', values: { type: 'bar', barStyle: 'twisted', spacing: '160', overhang: 20, barD: 16, standoff: 22, postD: 12, twistSection: 'star', barTwist: 360 } },
     { name: 'Golvende greep 128', values: { type: 'bar', barStyle: 'wavy', spacing: '128', overhang: 20, barD: 12, standoff: 24, postD: 12, waves: 1, waveAmp: 9 } },
@@ -1105,7 +1326,21 @@ export const handlesTool: ToolDef = {
   randomize: () => {
     const r = (a: number, b: number, step = 1) => Math.round((a + Math.random() * (b - a)) / step) * step;
     const pick = <T,>(xs: T[]) => xs[Math.floor(Math.random() * xs.length)];
-    const type = pick(['knob', 'knob', 'knob', 'bar', 'arch']);
+    const take = <T,>(xs: T[]) => xs.splice(Math.floor(Math.random() * xs.length), 1)[0];
+    const type = pick(['knob', 'knob', 'kids', 'kids', 'set', 'bar', 'arch']);
+    if (type === 'kids')
+      return {
+        type, kidShape: pick(KID_SHAPES.map((s) => s.value)), kidD: r(28, 44), kidTall: r(85, 120, 5),
+        kidRings: r(3, 6), kidPetals: r(5, 8), kidBands: r(3, 5), kidDots: r(3, 9),
+      };
+    if (type === 'set') {
+      const n = r(2, 4);
+      const shapes = SET_SHAPES.map((s) => s.value);
+      const colors = KID_COLORS.map((c) => c.value);
+      const out: Params = { type, setCount: n, kidD: r(28, 40), kidTall: r(90, 115, 5), kidRings: r(3, 6), kidPetals: r(5, 8), kidBands: r(3, 5), kidDots: r(3, 9) };
+      for (let i = 1; i <= n; i++) Object.assign(out, { [`set${i}Shape`]: take(shapes), [`set${i}Color`]: take(colors), [`set${i}Qty`]: r(1, 4) });
+      return out;
+    }
     if (type === 'knob')
       return {
         type, style: pick(DESIGN_STYLES.filter((s) => s.value !== 'custom').map((s) => s.value)),

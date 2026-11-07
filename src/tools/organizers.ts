@@ -864,7 +864,7 @@ function keyTray(M: ManifoldToplevel, p: Params, printer: PrinterProfile): Build
 
 // ---- print settings ------------------------------------------------------------
 
-interface PrintProfile {
+export interface PrintProfile {
   material: string;
   layer: string;
   walls: number;
@@ -958,8 +958,12 @@ const PRINT_PROFILES: Record<string, PrintProfile> = {
   },
 };
 
-function printSettings(type: string, printer: PrinterProfile): { info: InfoBlock; tips: string[] } {
-  const pr = PRINT_PROFILES[type];
+function printSettings(type: string, printer: PrinterProfile) {
+  return printSettingsOf(PRINT_PROFILES[type], printer);
+}
+
+/** Slicer settings as an info block, plus printer tips. `multicolor`: the parts are meant in different colours. */
+export function printSettingsOf(pr: PrintProfile, printer: PrinterProfile, o: { multicolor?: boolean } = {}): { info: InfoBlock; tips: string[] } {
   const rows: [string, string][] = [
     ['Printer', printer.name],
     ['Filament', pr.material],
@@ -976,7 +980,9 @@ function printSettings(type: string, printer: PrinterProfile): { info: InfoBlock
     tips.push(`De ${printer.name} is gesloten: zet bij PLA de deur en het deksel open (of kies de PLA-instelling met open deur), anders wordt het te warm en krijg je hittekruip. PETG kan met de deur dicht.`);
   }
   if (printer.nozzles === 2) {
-    tips.push('Voor een print in één kleur: kies het profiel met 1 nozzle, dan heb je het volledige bed en geen spoelafval.');
+    tips.push(o.multicolor
+      ? 'Met 2 nozzles: zet de twee kleuren die het meest voorkomen elk op een eigen nozzle; die wisselen zonder spoelen.'
+      : 'Voor een print in één kleur: kies het profiel met 1 nozzle, dan heb je het volledige bed en geen spoelafval.');
   }
   return { info: { kind: 'kv', title: `Printinstellingen (${printer.name})`, rows }, tips };
 }
