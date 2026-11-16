@@ -246,6 +246,23 @@ function newPiece(role: Role, name: string, color: string, h: number, spec?: Seg
   };
 }
 
+/** Designer element a piece belongs to (see PartOut.select). */
+function selectOf(pc: Piece): string {
+  switch (pc.role) {
+    case 'laag':
+      return 'layers';
+    case 'base':
+      return 'base';
+    case 'cover':
+      return 'socket';
+    case 'cap':
+    case 'canopy':
+      return 'canopy';
+    default:
+      return pc.spec && pc.spec.slot > 0 ? `seg:${pc.spec.slot}` : 'lamp';
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Body profiles (stack coordinates, z = 0 at the bottom of the body)
 
@@ -1058,7 +1075,7 @@ function build(p: Params, { M, printer }: Parameters<ToolDef['build']>[1]): Buil
     checkFit(pc.name, 2 * maxO, printH);
     const solid = shellSolid(M, pc);
     const idx = parts.length;
-    parts.push({ name: pc.name, solid, color: pc.color, material: 'petg-translucent', purpose: 'lamp' });
+    parts.push({ name: pc.name, solid, color: pc.color, material: 'petg-translucent', purpose: 'lamp', select: selectOf(pc) });
     scene.push({ kind: 'part', part: idx, matrix: placeMatrix(pc) });
     pc.partIndex = idx;
     masses.push({ m: grams(solid), z: pc.z0 + pc.h / 2 });
@@ -1069,7 +1086,7 @@ function build(p: Params, { M, printer }: Parameters<ToolDef['build']>[1]): Buil
       const n = pc.postCount!;
       const L = pc.h + 2 * POST_HOLE;
       const idx = parts.length;
-      parts.push({ name: `${pc.name} (Ø${(2 * pc.postR!).toFixed(0)} × ${L.toFixed(0)} mm)`, solid: pinSolid(M, pc.postR!, L), quantity: n, color: pc.color });
+      parts.push({ name: `${pc.name} (Ø${(2 * pc.postR!).toFixed(0)} × ${L.toFixed(0)} mm)`, solid: pinSolid(M, pc.postR!, L), quantity: n, color: pc.color, select: selectOf(pc) });
       for (let k = 0; k < n; k++) {
         const a = pc.postPhase! + (k * TAU) / n;
         scene.push({ kind: 'part', part: idx, matrix: translation(pc.postCircle! * Math.cos(a), pc.postCircle! * Math.sin(a), pc.z0 - POST_HOLE) });
@@ -1104,7 +1121,7 @@ function build(p: Params, { M, printer }: Parameters<ToolDef['build']>[1]): Buil
     }
     if (cut.length) solid = solid.subtract(M.Manifold.union(cut));
     const idx = parts.length;
-    parts.push({ name: pc.name, solid, color: pc.color, ...(pc.role === 'kap' || pc.role === 'lamel' ? { material: 'petg-translucent', purpose: 'lamp' as const } : {}) });
+    parts.push({ name: pc.name, solid, color: pc.color, select: selectOf(pc), ...(pc.role === 'kap' || pc.role === 'lamel' ? { material: 'petg-translucent', purpose: 'lamp' as const } : {}) });
     scene.push({ kind: 'part', part: idx, matrix: placeMatrix(pc) });
     pc.partIndex = idx;
     masses.push({ m: grams(solid), z: pc.z0 + pc.h / 2 });
@@ -1128,7 +1145,7 @@ function build(p: Params, { M, printer }: Parameters<ToolDef['build']>[1]): Buil
     const lidR = R - 0.3;
     const lid = lidSolid(M, lidR, R - BASE.rimW / 2 - 0.4, LID_SCREWS, bool(p, 'felt'));
     const idx = parts.length;
-    parts.push({ name: 'Bodemplaat', solid: lid, color: base.color });
+    parts.push({ name: 'Bodemplaat', solid: lid, color: base.color, select: 'base' });
     // printed underside up: z = 0 of the lid faces the base
     scene.push({ kind: 'part', part: idx, matrix: mul(translation(0, 0, BASE.lidT), rotX(180)) });
     masses.push({ m: grams(lid), z: BASE.lidT / 2 });
@@ -1183,7 +1200,7 @@ function build(p: Params, { M, printer }: Parameters<ToolDef['build']>[1]): Buil
       solid = M.Manifold.union([solid, ...bosses]).subtract(M.Manifold.union(holes));
     }
     const idx = parts.length;
-    parts.push({ name: pc.name, solid, color: pc.color });
+    parts.push({ name: pc.name, solid, color: pc.color, select: selectOf(pc) });
     scene.push({ kind: 'part', part: idx, matrix: placeMatrix(pc) });
     const maxO = Math.max(...pc.final.map((q) => q.o));
     rows.push(['–', pc.name, `Ø${(2 * maxO).toFixed(0)} × ${pc.h.toFixed(0)} mm`, colorName(pc.color), pc.flipped ? 'ondersteboven' : 'rechtop']);

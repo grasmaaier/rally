@@ -45,6 +45,7 @@ export function runBuild(M: ManifoldToplevel, tool: ToolDef, params: Params, pri
         triangles: placed.numTri(),
         material: p.material,
         purpose: p.purpose,
+        ...(p.select ? { select: p.select } : {}),
       };
     });
     const scene: SceneResult[] | undefined = out.scene?.map((s) => {
