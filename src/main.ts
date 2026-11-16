@@ -197,7 +197,7 @@ function showError(msg: string | null) {
   el.textContent = msg ?? '';
   const st = $('#stage-error');
   st.hidden = !msg || !designer;
-  st.textContent = msg ? `${msg} Het laatste goede model blijft staan.` : '';
+  st.textContent = msg ? `${msg}${state.result ? ' Het laatste goede model blijft staan.' : ''}` : '';
 }
 
 // ---------------------------------------------------------------------------
