@@ -164,6 +164,11 @@ export interface PartOut {
   material?: string;
   /** What the part is for, so the filament choice can be checked (heat near a bulb, outdoors, flexible). */
   purpose?: PartPurpose;
+  /**
+   * Which design element the part belongs to, for click-to-select in the
+   * designer (e.g. 'seg:3', 'layers', 'base', 'canopy', 'socket').
+   */
+  select?: string;
 }
 
 export type PartPurpose = 'lamp' | 'outdoor' | 'flexible';
@@ -238,6 +243,8 @@ export interface PartResult {
   triangles: number;
   material?: string;
   purpose?: PartPurpose;
+  /** See PartOut.select. */
+  select?: string;
 }
 
 export type SceneResult =

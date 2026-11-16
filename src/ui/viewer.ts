@@ -23,8 +23,32 @@ interface Theme {
   volume: string;
 }
 
-const LIGHT: Theme = { background: '#eef0f2', plate: '#3a3d42', gridMinor: '#4a4e55', gridMajor: '#61666e', volume: '#9aa3ad' };
-const DARK: Theme = { background: '#15171a', plate: '#2c2f34', gridMinor: '#393d43', gridMajor: '#4d525a', volume: '#4b525b' };
+interface ThemeX extends Theme {
+  shadow: number;
+  highlight: string;
+  hover: string;
+  axes: [string, string, string];
+}
+
+const LIGHT: ThemeX = {
+  background: '#e9eaec', plate: '#d9dbdf', gridMinor: '#c9ccd1', gridMajor: '#b4b8be', volume: '#9aa3ad',
+  shadow: 0.34, highlight: '#3b82f6', hover: '#93b8f5', axes: ['#d9534f', '#3e9b5c', '#3f6fd8'],
+};
+const DARK: ThemeX = {
+  background: '#17181b', plate: '#2c2f34', gridMinor: '#393d43', gridMajor: '#4d525a', volume: '#4b525b',
+  shadow: 0.6, highlight: '#5b9bff', hover: '#3d5f99', axes: ['#ef6b67', '#5cc07c', '#6f97ff'],
+};
+
+/** A content object the designer may move temporarily (drag preview). */
+export interface ContentItem {
+  object: THREE.Object3D;
+  /** Part index, or null for reference objects (tube, socket, bulb). */
+  part: number | null;
+  /** World bounding box of the object as built. */
+  box: THREE.Box3;
+  /** Matrix as built. */
+  base: THREE.Matrix4;
+}
 
 /** Three.js viewer working in printer coordinates: millimetres, Z up. */
 export class Viewer {
@@ -38,7 +62,7 @@ export class Viewer {
   private floor: THREE.Object3D | null = null;
   private geoms: THREE.BufferGeometry[] = [];
   private needsRender = true;
-  private theme: Theme = LIGHT;
+  private theme: ThemeX = LIGHT;
   private printer: PrinterProfile | null = null;
   private plateCount = 1;
   private section = false;
@@ -46,6 +70,16 @@ export class Viewer {
   private lastFitKey = '';
   private looks: (PartLook | undefined)[] = [];
   private partColors: (string | undefined)[] = [];
+  private selected = new Set<number>();
+  private hovered = new Set<number>();
+  private raycaster = new THREE.Raycaster();
+  private frameListeners: (() => void)[] = [];
+  private previewObj: THREE.Object3D | null = null;
+  private triad: SVGSVGElement;
+  /** Click (not drag) on the canvas: the part under the pointer, or null for empty space. */
+  onPick: ((part: number | null, ev: PointerEvent) => void) | null = null;
+  /** Mouse hover over a part (desktop only). */
+  onHover: ((part: number | null) => void) | null = null;
 
   constructor(private host: HTMLElement) {
     this.renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
@@ -70,17 +104,231 @@ export class Viewer {
     this.scene.add(new THREE.HemisphereLight(0xffffff, 0x5a5f66, 0.6), key, fill);
     this.scene.add(this.root);
     this.root.add(this.plates, this.content);
+    this.triad = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    this.triad.setAttribute('class', 'triad');
+    this.triad.setAttribute('viewBox', '-30 -30 60 60');
+    this.triad.setAttribute('aria-hidden', 'true');
+    host.appendChild(this.triad);
     new ResizeObserver(() => this.resize()).observe(host);
     this.resize();
+    this.setupPointer();
     const loop = () => {
       requestAnimationFrame(loop);
       const moved = this.controls.update();
       if (moved || this.needsRender) {
         this.needsRender = false;
         this.renderer.render(this.scene, this.camera);
+        this.drawTriad();
+        for (const f of this.frameListeners) {
+          try {
+            f();
+          } catch (err) {
+            console.warn(err);
+          }
+        }
       }
     };
     loop();
+  }
+
+  /** Clicks and hover on the canvas (a drag that orbits is not a click). */
+  private setupPointer() {
+    const el = this.renderer.domElement;
+    let down: { x: number; y: number; t: number; id: number } | null = null;
+    el.addEventListener('pointerdown', (e) => {
+      down = { x: e.clientX, y: e.clientY, t: performance.now(), id: e.pointerId };
+    });
+    el.addEventListener('pointerup', (e) => {
+      const d = down;
+      down = null;
+      if (!d || d.id !== e.pointerId || e.button !== 0) return;
+      if (Math.hypot(e.clientX - d.x, e.clientY - d.y) > 6 || performance.now() - d.t > 700) return;
+      this.onPick?.(this.pick(e.clientX, e.clientY), e);
+    });
+    let last = 0;
+    let pending: PointerEvent | null = null;
+    let lastPart: number | null = null;
+    const hover = () => {
+      const e = pending;
+      pending = null;
+      if (!e) return;
+      last = performance.now();
+      const part = this.pick(e.clientX, e.clientY);
+      if (part !== lastPart) {
+        lastPart = part;
+        this.onHover?.(part);
+      }
+    };
+    el.addEventListener('pointermove', (e) => {
+      if (e.pointerType !== 'mouse' || e.buttons !== 0 || !this.onHover) return;
+      const waiting = pending !== null;
+      pending = e;
+      if (!waiting) window.setTimeout(hover, Math.max(0, 70 - (performance.now() - last)));
+    });
+    el.addEventListener('pointerleave', () => {
+      pending = null;
+      if (lastPart !== null) {
+        lastPart = null;
+        this.onHover?.(null);
+      }
+    });
+  }
+
+  /** Part index under a screen point (client coordinates), or null. */
+  pick(clientX: number, clientY: number): number | null {
+    const r = this.renderer.domElement.getBoundingClientRect();
+    if (!r.width || !r.height) return null;
+    const ndc = new THREE.Vector2(((clientX - r.left) / r.width) * 2 - 1, -((clientY - r.top) / r.height) * 2 + 1);
+    this.raycaster.setFromCamera(ndc, this.camera);
+    const targets: THREE.Object3D[] = [];
+    this.content.traverse((o) => {
+      if ((o as THREE.Mesh).isMesh && typeof o.userData.part === 'number' && o.visible && !o.userData.back) targets.push(o);
+    });
+    try {
+      const hit = this.raycaster.intersectObjects(targets, false)[0];
+      return hit ? (hit.object.userData.part as number) : null;
+    } catch {
+      return null;
+    }
+  }
+
+  /** Emphasise the selected parts (and the hovered ones, more subtly). */
+  setHighlight(selected: Iterable<number>, hovered: Iterable<number> = []) {
+    this.selected = new Set(selected);
+    this.hovered = new Set(hovered);
+    this.refreshHighlight();
+  }
+
+  private refreshHighlight() {
+    const sel = new THREE.Color(this.theme.highlight);
+    const hov = new THREE.Color(this.theme.hover);
+    this.content.traverse((o) => {
+      const m = (o as THREE.Mesh).material as THREE.MeshPhysicalMaterial | undefined;
+      if (!m || !m.userData.filament || m.userData.back) return;
+      const part = m.userData.part as number;
+      if (this.selected.has(part)) {
+        m.emissive.copy(sel);
+        m.emissiveIntensity = 0.2;
+      } else if (this.hovered.has(part)) {
+        m.emissive.copy(hov);
+        m.emissiveIntensity = 0.13;
+      } else {
+        m.emissive.setRGB(0, 0, 0);
+        m.emissiveIntensity = 1;
+      }
+    });
+    this.needsRender = true;
+  }
+
+  /** Called after every rendered frame (camera moves, resizes, new content). */
+  addFrameListener(f: () => void): () => void {
+    this.frameListeners.push(f);
+    return () => {
+      this.frameListeners = this.frameListeners.filter((x) => x !== f);
+    };
+  }
+
+  requestRender() {
+    this.needsRender = true;
+  }
+
+  /** Turn camera orbiting off while a handle is dragged. */
+  setOrbit(on: boolean) {
+    this.controls.enabled = on;
+  }
+
+  /** World point → CSS pixels in the viewer (z > 1 = behind the camera). */
+  project(v: THREE.Vector3): { x: number; y: number; behind: boolean } {
+    const p = v.clone().project(this.camera);
+    return { x: ((p.x + 1) / 2) * this.host.clientWidth, y: ((1 - p.y) / 2) * this.host.clientHeight, behind: p.z > 1 };
+  }
+
+  /** Horizontal unit vector pointing to the right of the screen. */
+  screenRight(): THREE.Vector3 {
+    const e = this.camera.matrixWorld.elements;
+    const v = new THREE.Vector3(e[0], e[1], 0);
+    if (v.lengthSq() < 1e-8) v.set(1, 0, 0);
+    return v.normalize();
+  }
+
+  /** Printed parts and reference objects as shown (for drag previews). */
+  contentItems(): ContentItem[] {
+    const out: ContentItem[] = [];
+    for (const o of this.content.children) {
+      if (o === this.previewObj || o.userData.helper) continue;
+      if (!o.userData.base) {
+        if (o.matrixAutoUpdate) o.updateMatrix();
+        o.userData.base = o.matrix.clone();
+      }
+      const mesh = o as THREE.Mesh;
+      const geo = mesh.geometry as THREE.BufferGeometry | undefined;
+      let box: THREE.Box3;
+      if (o.userData.box) box = o.userData.box as THREE.Box3;
+      else {
+        if (!geo) continue;
+        if (!geo.boundingBox) geo.computeBoundingBox();
+        box = geo.boundingBox!.clone().applyMatrix4(o.userData.base as THREE.Matrix4);
+        o.userData.box = box;
+      }
+      out.push({ object: o, part: typeof o.userData.part === 'number' ? (o.userData.part as number) : null, box, base: o.userData.base as THREE.Matrix4 });
+    }
+    return out;
+  }
+
+  /** Put a content object back where the build placed it. */
+  restoreItem(it: ContentItem) {
+    it.object.matrixAutoUpdate = false;
+    it.object.matrix.copy(it.base);
+    it.object.matrixWorldNeedsUpdate = true;
+    it.object.visible = true;
+    this.needsRender = true;
+  }
+
+  /** Move a content object (matrix applied after its built placement). */
+  moveItem(it: ContentItem, m: THREE.Matrix4, visible = true) {
+    it.object.matrixAutoUpdate = false;
+    it.object.matrix.multiplyMatrices(m, it.base);
+    it.object.matrixWorldNeedsUpdate = true;
+    it.object.visible = visible;
+    this.needsRender = true;
+  }
+
+  /** A temporary object (drag preview); replaced by the next call or by new content. */
+  setPreview(obj: THREE.Object3D | null) {
+    if (this.previewObj) {
+      this.content.remove(this.previewObj);
+      disposeTree(this.previewObj);
+    }
+    this.previewObj = obj;
+    if (obj) this.content.add(obj);
+    this.needsRender = true;
+  }
+
+  /** A filament-like material for previews. */
+  previewMaterial(color: string): THREE.Material {
+    const m = new THREE.MeshPhysicalMaterial({ side: THREE.DoubleSide, metalness: 0 });
+    applyLook(m, { color }, false);
+    m.emissive.set(this.theme.highlight);
+    m.emissiveIntensity = 0.25;
+    return m;
+  }
+
+  private drawTriad() {
+    const t = this.triad;
+    if (!t.isConnected) return;
+    const e = this.camera.matrixWorldInverse.elements;
+    // camera-space x/y of the world axes
+    const axes = [0, 1, 2].map((i) => ({ i, x: e[i * 4 + 0], y: e[i * 4 + 1], z: e[i * 4 + 2] }));
+    axes.sort((a, b) => a.z - b.z);
+    const names = ['X', 'Y', 'Z'];
+    t.innerHTML = axes
+      .map(({ i, x, y }) => {
+        const c = this.theme.axes[i];
+        const px = x * 19;
+        const py = -y * 19;
+        return `<line x1="0" y1="0" x2="${px.toFixed(1)}" y2="${py.toFixed(1)}" stroke="${c}" stroke-width="2" stroke-linecap="round"/><circle cx="${(px * 1.2).toFixed(1)}" cy="${(py * 1.2).toFixed(1)}" r="6" fill="${c}"/><text x="${(px * 1.2).toFixed(1)}" y="${(py * 1.2 + 3).toFixed(1)}" text-anchor="middle" font-size="8" font-weight="700" fill="#fff">${names[i]}</text>`;
+      })
+      .join('');
   }
 
   private resize() {
@@ -98,6 +346,7 @@ export class Viewer {
     this.theme = dark ? DARK : LIGHT;
     this.scene.background = new THREE.Color(this.theme.background);
     if (this.printer) this.buildPlates(this.printer, this.plateCount);
+    this.refreshHighlight();
     this.needsRender = true;
   }
 
@@ -122,7 +371,7 @@ export class Viewer {
       const m = (o as THREE.Mesh).material as THREE.MeshPhysicalMaterial | undefined;
       if (m && m.userData.filament) applyLook(m, this.lookOf(m.userData.part as number), !!m.userData.back);
     });
-    this.needsRender = true;
+    this.refreshHighlight();
   }
 
   private buildPlates(p: PrinterProfile, count: number) {
@@ -151,6 +400,11 @@ export class Viewer {
   }
 
   private clearContent() {
+    if (this.previewObj) {
+      this.content.remove(this.previewObj);
+      disposeTree(this.previewObj);
+      this.previewObj = null;
+    }
     for (const g of this.geoms) g.dispose();
     this.geoms = [];
     this.content.traverse((o) => {
@@ -161,6 +415,7 @@ export class Viewer {
     this.content.clear();
     if (this.floor) {
       this.root.remove(this.floor);
+      disposeTree(this.floor);
       this.floor = null;
     }
   }
@@ -190,6 +445,8 @@ export class Viewer {
       const mesh = new THREE.Mesh(geom, mat);
       mesh.matrixAutoUpdate = false;
       mesh.matrix.copy(matrix);
+      mesh.userData.part = part;
+      if (mat.userData.back) mesh.userData.back = true;
       this.content.add(mesh);
     }
   }
@@ -266,18 +523,20 @@ export class Viewer {
           }
         }
       }
-      // soft floor grid under the assembly
-      const size = Math.max(box.max.x - box.min.x, box.max.y - box.min.y) * 1.6 + 200;
-      const step = size > 2000 ? 100 : 50;
-      const n = Math.ceil(size / step / 2) * 2;
-      const grid = new THREE.GridHelper(n * step, n, this.theme.gridMajor, this.theme.gridMinor);
-      grid.rotation.x = Math.PI / 2;
-      grid.position.set((box.min.x + box.max.x) / 2, (box.min.y + box.max.y) / 2, Math.min(0, box.min.z) - 0.5);
-      (grid.material as THREE.Material).transparent = true;
-      (grid.material as THREE.Material).opacity = 0.5;
-      this.floor = grid;
-      this.root.add(grid);
+      // the model floats over a soft contact shadow (no grid)
+      const w = Math.max(box.max.x - box.min.x, box.max.y - box.min.y, 40);
+      const floorZ = Math.min(0, box.min.z) - 0.5;
+      const shadow = new THREE.Mesh(
+        new THREE.PlaneGeometry(w * 1.9, w * 1.9),
+        new THREE.MeshBasicMaterial({ map: shadowTexture(), transparent: true, depthWrite: false, opacity: this.theme.shadow, toneMapped: false, color: 0x000000 }),
+      );
+      shadow.position.set((box.min.x + box.max.x) / 2, (box.min.y + box.max.y) / 2, floorZ);
+      shadow.renderOrder = -1;
+      shadow.userData.helper = true;
+      this.floor = shadow;
+      this.root.add(shadow);
     }
+    this.refreshHighlight();
     if (fitKey !== this.lastFitKey) {
       this.lastFitKey = fitKey;
       this.fit(mode === 'plate' || !result.scene);
@@ -330,6 +589,38 @@ export class Viewer {
   }
 }
 
+let shadowTex: THREE.Texture | null = null;
+
+/** Radial gradient for the contact shadow (shared). */
+function shadowTexture(): THREE.Texture {
+  if (shadowTex) return shadowTex;
+  const c = document.createElement('canvas');
+  c.width = c.height = 128;
+  const g = c.getContext('2d');
+  if (g) {
+    const grad = g.createRadialGradient(64, 64, 0, 64, 64, 64);
+    grad.addColorStop(0, 'rgba(255,255,255,0.9)');
+    grad.addColorStop(0.28, 'rgba(255,255,255,0.55)');
+    grad.addColorStop(0.62, 'rgba(255,255,255,0.12)');
+    grad.addColorStop(1, 'rgba(255,255,255,0)');
+    g.fillStyle = grad;
+    g.fillRect(0, 0, 128, 128);
+  }
+  shadowTex = new THREE.CanvasTexture(c);
+  // the texture is used as alpha through the white→transparent gradient
+  return shadowTex;
+}
+
+function disposeTree(o: THREE.Object3D) {
+  o.traverse((x) => {
+    const m = x as THREE.Mesh;
+    m.geometry?.dispose();
+    const mat = m.material as THREE.Material | THREE.Material[] | undefined;
+    if (Array.isArray(mat)) mat.forEach((y) => y.dispose());
+    else mat?.dispose();
+  });
+}
+
 function lines(pts: number[], color: string) {
   const g = new THREE.BufferGeometry();
   g.setAttribute('position', new THREE.Float32BufferAttribute(pts, 3));
@@ -359,7 +650,7 @@ function flat(g: THREE.BufferGeometry) {
 }
 
 /** Opaque filament is a satin plastic; translucent filament lets light through (transmission). */
-function applyLook(m: THREE.MeshPhysicalMaterial, look: PartLook, back: boolean) {
+export function applyLook(m: THREE.MeshPhysicalMaterial, look: PartLook, back: boolean) {
   const see = !!(look.translucent || look.clear);
   if (back) {
     // the cut face in section view

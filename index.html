@@ -5,8 +5,8 @@
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
     <title>Rally Printstudio</title>
     <meta name="description" content="Parametrische 3D-printontwerpen voor Bambu Lab-printers (standaard de A2L): vazen, lampenkappen, Gridfinity, grepen, verbinders, meubels en zelfwaterende plantenpotten." />
-    <meta name="theme-color" content="#0f8a5f" />
-    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%230f8a5f'/%3E%3Cpath d='M9 23V9h8a4.5 4.5 0 0 1 0 9h-8M16 18l6 5' fill='none' stroke='white' stroke-width='2.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E" />
+    <meta name="theme-color" content="#e9eaec" />
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%23111111'/%3E%3Cpath d='M9 23V9h8a4.5 4.5 0 0 1 0 9h-8M16 18l6 5' fill='none' stroke='white' stroke-width='2.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E" />
   </head>
   <body>
     <div id="app">
@@ -21,7 +21,7 @@
             <span class="printer-label">Printer</span>
             <select id="printer" aria-label="Printer"></select>
           </label>
-          <button id="theme" class="icon-btn" type="button" aria-label="Thema">☾</button>
+          <button id="theme" class="icon-btn" type="button" aria-label="Thema"></button>
         </div>
       </header>
       <main class="layout">
@@ -36,14 +36,34 @@
             <button id="reset" class="ghost" type="button" title="Standaardwaarden">Reset</button>
           </div>
           <div id="error" class="callout error" role="alert" hidden></div>
+          <div id="outliner" class="outliner" hidden></div>
+          <div id="form-head" class="form-head">
+            <button id="back-to-stack" class="ghost small" type="button">← Terug naar de stapel</button>
+            <span class="muted small">Alle instellingen</span>
+          </div>
           <div id="form"></div>
         </aside>
         <section class="stage" aria-label="3D-voorbeeld">
           <div id="viewer" class="viewer"></div>
+          <svg id="gizmo" class="gizmo" aria-hidden="false"></svg>
+          <div id="nodeview" class="nodeview" hidden></div>
           <div class="stage-bar">
-            <div class="seg" id="view-toggle" hidden>
-              <button type="button" data-view="assembly" aria-pressed="true">Samengesteld</button>
-              <button type="button" data-view="plate" aria-pressed="false">Printplaat</button>
+            <div class="stage-left">
+              <div class="tgroup" role="toolbar" aria-label="Bewerken">
+                <button id="undo" class="tbtn" type="button" title="Ongedaan maken (Ctrl+Z)" aria-label="Ongedaan maken" disabled></button>
+                <button id="redo" class="tbtn" type="button" title="Opnieuw (Ctrl+Shift+Z)" aria-label="Opnieuw" disabled></button>
+                <span class="tsep"></span>
+                <button id="lib-open" class="tbtn" type="button" title="Bibliotheek: bewaar en laad ontwerpen"></button>
+                <button id="share-top" class="tbtn" type="button" title="Kopieer een link naar dit ontwerp"></button>
+              </div>
+              <div class="seg" id="stage-tabs" hidden>
+                <button type="button" data-tab="3d" aria-pressed="true">3D</button>
+                <button type="button" data-tab="nodes" aria-pressed="false">Nodes</button>
+              </div>
+              <div class="seg" id="view-toggle" hidden>
+                <button type="button" data-view="assembly" aria-pressed="true">Samengesteld</button>
+                <button type="button" data-view="plate" aria-pressed="false">Printplaat</button>
+              </div>
             </div>
             <div class="stage-tools">
               <label class="pill-toggle"><input type="checkbox" id="section" /> Doorsnede</label>
@@ -56,12 +76,21 @@
             </div>
           </div>
           <div id="busy" class="busy" hidden><span class="spinner"></span>Rekenen…</div>
+          <div id="stage-error" class="stage-error" role="status" hidden></div>
+          <div id="toast" class="toast" role="status" hidden></div>
           <div class="stage-foot">
             <div id="stats" class="stats"></div>
             <div id="swatches" class="swatches" aria-label="Voorbeeldkleur"></div>
           </div>
         </section>
         <aside class="panel output">
+          <button id="sheet-handle" class="sheet-handle" type="button" aria-label="Paneel uitklappen" hidden><span></span></button>
+          <div id="right-tabs" class="panel-tabs seg" hidden>
+            <button type="button" data-rtab="inspect" aria-pressed="true">Eigenschappen</button>
+            <button type="button" data-rtab="print" aria-pressed="false">Printen</button>
+          </div>
+          <div id="inspector" class="inspector" hidden></div>
+          <div id="output-body" class="output-body">
           <div class="export">
             <button id="export-3mf" class="primary" type="button">Download 3MF voor Bambu Studio</button>
             <div class="export-row">
@@ -91,6 +120,7 @@
           </section>
           <div id="info"></div>
           <div id="tips" class="tips"></div>
+          </div>
         </aside>
       </main>
     </div>
