@@ -24,6 +24,13 @@ import { Viewer, type PartLook, type ViewMode } from './ui/viewer';
 import { buildForm, type FileHooks, type FormHandle } from './ui/form';
 import { svgToShape } from './ui/svg';
 import { parseMeshFile } from './geom/meshfile';
+import { History } from './designer/history';
+import { Library, browserKV } from './designer/library';
+import { decodeHash as decodeShareHash, encodeHash as encodeShareHash } from './designer/share';
+import { LampDesigner } from './designer/designer';
+import { LAMP } from './designer/lampModel';
+import { icon } from './designer/icons';
+import { openLibrary } from './designer/libraryUI';
 
 const $ = <T extends HTMLElement = HTMLElement>(sel: string) => document.querySelector(sel) as T;
 
@@ -98,31 +105,19 @@ const state: State = {
 // URL state: #tool?key=value (only values that differ from the defaults)
 
 function encodeHash() {
-  const defs = defaultsOf(state.tool.params);
-  const q = new URLSearchParams();
-  for (const [k, v] of Object.entries(state.params)) if (defs[k] !== v) q.set(k, String(v));
-  const s = q.toString();
-  return `#${state.tool.id}${s ? `?${s}` : ''}`;
+  return encodeShareHash(state.tool.id, state.tool.params, state.params);
 }
 
+/** The design in the address bar (values checked against the schema; a bare #tool uses the saved values). */
 function decodeHash(): { tool: ToolDef; params: Params } | null {
-  const h = location.hash.replace(/^#\/?/, '');
-  if (!h) return null;
-  const [id, query] = h.split('?');
-  const tool = TOOL_MAP[id];
-  if (!tool) return null;
-  const params = { ...defaultsOf(tool.params) };
-  if (query) {
-    const q = new URLSearchParams(query);
-    for (const d of tool.params) {
-      if (d.type === 'group' || !q.has(d.key)) continue;
-      const raw = q.get(d.key)!;
-      params[d.key] = d.type === 'number' ? Number(raw) : d.type === 'bool' ? raw === 'true' : raw;
-    }
-  } else {
-    Object.assign(params, savedParams(tool));
+  try {
+    const d = decodeShareHash(location.hash, TOOL_MAP);
+    if (!d) return null;
+    const tool = TOOL_MAP[d.toolId];
+    return { tool, params: d.params ?? { ...defaultsOf(tool.params), ...savedParams(tool) } };
+  } catch {
+    return null;
   }
-  return { tool, params };
 }
 
 function savedParams(tool: ToolDef): Params {
@@ -177,9 +172,15 @@ async function runBuild() {
       state.result = res;
       showError(null);
       render();
+      designer?.built();
     }
   } catch (err) {
-    if (my === token) showError((err as Error).message);
+    if (my === token) {
+      showError((err as Error).message);
+      // keep the last good model (and drop any drag preview)
+      if (state.result) render();
+      designer?.failed();
+    }
   } finally {
     inFlight = false;
     $('#busy').hidden = true;
@@ -194,6 +195,9 @@ function showError(msg: string | null) {
   const el = $('#error');
   el.hidden = !msg;
   el.textContent = msg ?? '';
+  const st = $('#stage-error');
+  st.hidden = !msg || !designer;
+  st.textContent = msg ? `${msg} Het laatste goede model blijft staan.` : '';
 }
 
 // ---------------------------------------------------------------------------
@@ -683,18 +687,113 @@ const fileHooks: FileHooks = {
 // Tool switching & controls
 
 let form: FormHandle | null = null;
+let designer: LampDesigner | null = null;
+const hist = new History<Params>({});
+const library = new Library(browserKV());
+
+/** Every change of the design goes through here: undo step, save, rebuild. */
+function applyParams(next: Params, key: string | null, final: boolean) {
+  hist.record({ ...next }, key);
+  if (final) hist.seal();
+  state.params = { ...next };
+  afterParams(final ? 0 : 90);
+}
+
+function afterParams(delay = 0) {
+  form?.sync(state.params);
+  designer?.refresh();
+  persist();
+  updateUndo();
+  scheduleBuild(delay);
+}
 
 function onParam(key: string, value: ParamValue, final: boolean) {
-  state.params[key] = value;
-  form?.sync(state.params);
-  persist();
-  scheduleBuild(final ? 0 : 90);
+  applyParams({ ...state.params, [key]: value }, key, final);
+}
+
+function undo() {
+  const p = hist.undo();
+  if (!p) return;
+  state.params = { ...p };
+  afterParams();
+}
+
+function redo() {
+  const p = hist.redo();
+  if (!p) return;
+  state.params = { ...p };
+  afterParams();
+}
+
+function updateUndo() {
+  $<HTMLButtonElement>('#undo').disabled = !hist.canUndo;
+  $<HTMLButtonElement>('#redo').disabled = !hist.canRedo;
+}
+
+const phone = () => window.matchMedia('(max-width: 700px)').matches;
+
+function setSheet(open: boolean) {
+  document.body.classList.toggle('sheet-open', open);
+  $('#sheet-handle').setAttribute('aria-expanded', String(open));
+  $('#sheet-handle').setAttribute('aria-label', open ? 'Paneel inklappen' : 'Paneel uitklappen');
+}
+
+function setRightTab(tab: 'inspect' | 'print') {
+  document.body.dataset.rtab = tab;
+  for (const b of document.querySelectorAll<HTMLButtonElement>('#right-tabs button')) b.setAttribute('aria-pressed', String(b.dataset.rtab === tab));
+}
+
+function setStageTab(tab: '3d' | 'nodes') {
+  for (const b of document.querySelectorAll<HTMLButtonElement>('#stage-tabs button')) b.setAttribute('aria-pressed', String(b.dataset.tab === tab));
+  document.body.dataset.stage = tab;
+  designer?.setTab(tab);
+}
+
+function showAllSettings(on: boolean) {
+  document.body.classList.toggle('full-form', on);
+  if (on) {
+    $('.params').scrollTop = 0;
+    if (phone()) $('#form-head').scrollIntoView({ block: 'start' });
+  }
+}
+
+function mountDesigner(tool: ToolDef) {
+  designer?.destroy();
+  designer = null;
+  const on = tool.id === 'lamp';
+  document.body.classList.toggle('designer', on);
+  document.body.classList.remove('full-form');
+  $('#outliner').hidden = !on;
+  $('#inspector').hidden = !on;
+  $('#right-tabs').hidden = !on;
+  $('#stage-tabs').hidden = !on;
+  $('#sheet-handle').hidden = !on;
+  setRightTab('inspect');
+  setStageTab('3d');
+  setSheet(false);
+  if (!on) return;
+  designer = new LampDesigner(
+    {
+      defs: tool.params,
+      viewer,
+      params: () => state.params,
+      apply: (next, key, final) => applyParams(next, key, final),
+      result: () => state.result,
+      assembled: () => !!state.result?.scene?.length && state.view === 'assembly',
+      showAllSettings: () => showAllSettings(true),
+      onSelect: () => {
+        setRightTab('inspect');
+        if (phone()) setSheet(true);
+      },
+    },
+    { outliner: $('#outliner'), inspector: $('#inspector'), nodeview: $('#nodeview'), gizmo: document.querySelector<SVGSVGElement>('#gizmo')! },
+  );
 }
 
 function selectTool(tool: ToolDef, params?: Params) {
   token++;
   state.tool = tool;
-  state.params = params ?? { ...defaultsOf(tool.params), ...savedParams(tool) };
+  state.params = { ...(params ?? { ...defaultsOf(tool.params), ...savedParams(tool) }) };
   state.result = null;
   state.view = 'assembly';
   state.partFilament = loadPartFilament(tool.id);
@@ -706,9 +805,67 @@ function selectTool(tool: ToolDef, params?: Params) {
   presets.innerHTML = '<option value="">Voorbeelden…</option>' + (tool.presets ?? []).map((p, i) => `<option value="${i}">${escapeHtml(p.name)}</option>`).join('');
   $('#random').hidden = !tool.randomize;
   form = buildForm($('#form'), tool.params, state.params, onParam, fileHooks);
+  hist.reset({ ...state.params });
+  mountDesigner(tool);
+  updateUndo();
   persist();
   showError(null);
   scheduleBuild();
+}
+
+/** A small JPEG of the viewer for the library. */
+function thumbnail(): Promise<string | undefined> {
+  return new Promise((resolve) => {
+    try {
+      const src = viewer.snapshot();
+      const img = new Image();
+      img.onload = () => {
+        try {
+          const c = document.createElement('canvas');
+          c.width = 240;
+          c.height = 180;
+          const g = c.getContext('2d')!;
+          const k = Math.max(c.width / img.width, c.height / img.height);
+          const w = img.width * k;
+          const h = img.height * k;
+          g.drawImage(img, (c.width - w) / 2, (c.height - h) / 2, w, h);
+          resolve(c.toDataURL('image/jpeg', 0.78));
+        } catch {
+          resolve(undefined);
+        }
+      };
+      img.onerror = () => resolve(undefined);
+      img.src = src;
+    } catch {
+      resolve(undefined);
+    }
+  });
+}
+
+let toastTimer: number | undefined;
+function toast(msg: string) {
+  const t = $('#toast');
+  t.textContent = msg;
+  t.hidden = false;
+  window.clearTimeout(toastTimer);
+  toastTimer = window.setTimeout(() => (t.hidden = true), 2200);
+}
+
+async function shareLink(btn?: HTMLElement) {
+  persist();
+  const url = `${location.origin}${location.pathname}${location.search}${encodeHash()}`;
+  let ok = false;
+  try {
+    await navigator.clipboard.writeText(url);
+    ok = true;
+  } catch {
+    ok = false;
+  }
+  toast(ok ? 'Link naar dit ontwerp gekopieerd' : 'Kopiëren lukte niet: kopieer de adresbalk');
+  if (btn && btn.id === 'share') {
+    btn.textContent = ok ? 'Link gekopieerd ✓' : 'Kopieer de adresbalk';
+    setTimeout(() => (btn.textContent = 'Deel ontwerp'), 1800);
+  }
 }
 
 function loadPartFilament(toolId: string): Record<string, FilamentChoice> {
@@ -756,39 +913,83 @@ function setupChrome() {
     const preset = state.tool.presets?.[Number(sel.value)];
     sel.value = '';
     if (!preset) return;
-    state.params = { ...defaultsOf(state.tool.params), ...preset.values } as Params;
-    form?.sync(state.params);
-    persist();
-    scheduleBuild();
+    applyParams({ ...defaultsOf(state.tool.params), ...preset.values } as Params, null, true);
   });
   $('#random').addEventListener('click', () => {
     if (!state.tool.randomize) return;
-    Object.assign(state.params, state.tool.randomize(state.params));
-    form?.sync(state.params);
-    persist();
-    scheduleBuild();
+    applyParams({ ...state.params, ...state.tool.randomize(state.params) } as Params, null, true);
   });
   $('#reset').addEventListener('click', () => {
-    state.params = defaultsOf(state.tool.params);
-    form?.sync(state.params);
-    persist();
-    scheduleBuild();
+    applyParams(defaultsOf(state.tool.params), null, true);
   });
-  $('#share').addEventListener('click', async () => {
-    const btn = $('#share');
-    try {
-      await navigator.clipboard.writeText(location.href);
-      btn.textContent = 'Link gekopieerd ✓';
-    } catch {
-      btn.textContent = 'Kopieer de adresbalk';
+  $('#share').addEventListener('click', () => shareLink($('#share')));
+  $('#share-top').addEventListener('click', () => shareLink());
+
+  // undo / redo, library
+  $('#undo').innerHTML = icon('undo');
+  $('#redo').innerHTML = icon('redo');
+  $('#lib-open').innerHTML = `${icon('library')}<span>Bibliotheek</span>`;
+  $('#share-top').innerHTML = `${icon('share')}<span>Delen</span>`;
+  $('#undo').addEventListener('click', undo);
+  $('#redo').addEventListener('click', redo);
+  $('#lib-open').addEventListener('click', () =>
+    openLibrary({
+      lib: library,
+      toolId: state.tool.id,
+      toolName: state.tool.name,
+      params: () => state.params,
+      thumb: thumbnail,
+      load: (d) => {
+        const tool = TOOL_MAP[d.tool];
+        if (!tool) return;
+        // only keys the tool knows, with the right types
+        const base = defaultsOf(tool.params);
+        const params: Params = { ...base };
+        for (const k of Object.keys(base)) if (typeof d.params[k] === typeof base[k]) params[k] = d.params[k];
+        if (tool.id === state.tool.id) applyParams(params, null, true);
+        else selectTool(tool, params);
+        toast(`“${d.name}” geladen`);
+      },
+    }),
+  );
+  window.addEventListener('keydown', (e) => {
+    const t = e.target as HTMLElement;
+    const typing = t.closest('input:not([type="range"]):not([type="checkbox"]), textarea, select, [contenteditable="true"]') !== null;
+    const mod = e.ctrlKey || e.metaKey;
+    if (mod && !e.altKey && !typing && document.querySelector('dialog[open]') === null) {
+      const k = e.key.toLowerCase();
+      if (k === 'z' && !e.shiftKey) {
+        e.preventDefault();
+        undo();
+        return;
+      }
+      if ((k === 'z' && e.shiftKey) || k === 'y') {
+        e.preventDefault();
+        redo();
+        return;
+      }
     }
-    setTimeout(() => (btn.textContent = 'Deel ontwerp'), 1800);
+    if (!designer || typing || mod || document.querySelector('dialog[open], .picker')) return;
+    if (e.key === 'Delete' && !t.closest('.nv-svg')) {
+      e.preventDefault();
+      designer.deleteSelected();
+    } else if (e.key === 'Escape') designer.select(LAMP);
   });
+
+  // designer chrome
+  for (const b of document.querySelectorAll<HTMLButtonElement>('#right-tabs button')) b.addEventListener('click', () => {
+    setRightTab(b.dataset.rtab as 'inspect' | 'print');
+    if (phone()) setSheet(true);
+  });
+  for (const b of document.querySelectorAll<HTMLButtonElement>('#stage-tabs button')) b.addEventListener('click', () => setStageTab(b.dataset.tab as '3d' | 'nodes'));
+  $('#back-to-stack').addEventListener('click', () => showAllSettings(false));
+  $('#sheet-handle').addEventListener('click', () => setSheet(!document.body.classList.contains('sheet-open')));
 
   for (const b of document.querySelectorAll<HTMLButtonElement>('#view-toggle button')) {
     b.addEventListener('click', () => {
       state.view = b.dataset.view as ViewMode;
       render();
+      designer?.refresh();
     });
   }
   const section = $<HTMLInputElement>('#section');
@@ -832,7 +1033,8 @@ function setupChrome() {
     const dark = root.dataset.theme ? root.dataset.theme === 'dark' : media.matches;
     viewer.setTheme(dark);
     $('#theme').setAttribute('aria-label', dark ? 'Licht thema' : 'Donker thema');
-    $('#theme').textContent = dark ? '☀' : '☾';
+    $('#theme').title = dark ? 'Licht thema' : 'Donker thema';
+    $('#theme').innerHTML = icon(dark ? 'sun' : 'moon');
     if (state.result) render();
   };
   media.addEventListener('change', applyTheme);
@@ -845,7 +1047,9 @@ function setupChrome() {
 
   window.addEventListener('hashchange', () => {
     const d = decodeHash();
-    if (d && (d.tool.id !== state.tool.id || encodeHash() !== location.hash)) selectTool(d.tool, d.params);
+    if (!d) return;
+    if (d.tool.id !== state.tool.id) selectTool(d.tool, d.params);
+    else if (encodeHash() !== location.hash) applyParams(d.params, null, true);
   });
 }
 

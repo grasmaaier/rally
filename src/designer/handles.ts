@@ -28,8 +28,8 @@ export interface ElementHandles {
   handles: Handle[];
   /** Height of the element (mm). */
   H: number;
-  /** The end that stays put when the height changes. */
-  anchor: 'bottom' | 'top';
+  /** Largest radius (mm), for placing the height dimension beside the element. */
+  R: number;
 }
 
 const lerp = (a: number, b: number, t: number) => a + (b - a) * t;
@@ -141,9 +141,9 @@ export function handlesFor(sel: Sel, p: Params): ElementHandles | null {
     // world orientation: flipped segments and table-lamp shades are mirrored
     const mirrored = s.shape === 'kap' ? !pend : s.flip && s.shape !== 'stijlen' && s.shape !== 'lamel' && s.shape !== 'hals';
     const wz = (z: number) => (mirrored ? s.H - z : z);
-    const anchor = pend ? 'top' : 'bottom';
+    // the build stacks from the bottom up (also for pendants), so the bottom stays put
     const handles: Handle[] = [
-      { id: 'height', key: slotKey(sel.slot, 'H'), axis: 'z', r: 0, z: anchor === 'bottom' ? s.H : 0, perMm: anchor === 'bottom' ? 1 : -1, label: 'Hoogte', unit: 'mm', snap: 5 },
+      { id: 'height', key: slotKey(sel.slot, 'H'), axis: 'z', r: 0, z: s.H, perMm: 1, label: 'Hoogte', unit: 'mm', snap: 5 },
       { id: 'diameter', key: slotKey(sel.slot, 'D'), axis: 'r', r: s.D / 2, z: wz(widestZ(s, topR)), perMm: 2, label: 'Ø', unit: 'mm', snap: 5 },
     ];
     const vh = s.shape === 'hals' || s.shape === 'stijlen' ? null : variantHandle(s, topR);
@@ -159,14 +159,14 @@ export function handlesFor(sel: Sel, p: Params): ElementHandles | null {
         snap: 5,
       });
     }
-    return { handles, H: s.H, anchor };
+    return { handles, H: s.H, R: s.shape === 'kap' ? Math.max(s.D / 2, topR) : s.D / 2 };
   }
   if (sel.kind === 'base' && !pend) {
     const D = Number(p.baseD) || 150;
     const H = Number(p.baseH) || 40;
     return {
       H,
-      anchor: 'bottom',
+      R: D / 2,
       handles: [
         { id: 'height', key: 'baseH', axis: 'z', r: 0, z: H, perMm: 1, label: 'Hoogte', unit: 'mm', snap: 5 },
         { id: 'diameter', key: 'baseD', axis: 'r', r: D / 2, z: H / 2, perMm: 2, label: 'Ø', unit: 'mm', snap: 5 },
@@ -178,7 +178,7 @@ export function handlesFor(sel: Sel, p: Params): ElementHandles | null {
     const H = Number(p.canopyH) || 28;
     return {
       H,
-      anchor: 'bottom',
+      R: D / 2,
       handles: [
         { id: 'height', key: 'canopyH', axis: 'z', r: 0, z: H, perMm: 1, label: 'Hoogte', unit: 'mm', snap: 5 },
         { id: 'diameter', key: 'canopyD', axis: 'r', r: D / 2, z: H / 2, perMm: 2, label: 'Ø', unit: 'mm', snap: 5 },
@@ -186,6 +186,33 @@ export function handlesFor(sel: Sel, p: Params): ElementHandles | null {
     };
   }
   return null;
+}
+
+/**
+ * Outer profile of a segment as it stands in the lamp (z from the bottom of
+ * the element, world orientation), for the cheap drag preview. Null for
+ * elements that are not a body of revolution (posts).
+ */
+export function elementProfile(p: Params, slot: number): { H: number; r: (z: number) => number; n: number; outline: 'round' | 'flower' | 'gear' } | null {
+  const s = specOf(p, slot);
+  if (s.shape === 'stijlen') return null;
+  const pend = isPendant(p);
+  const mirrored = s.shape === 'kap' ? !pend : s.flip && s.shape !== 'lamel' && s.shape !== 'hals';
+  const f = s.shape === 'kap' ? kapRadius(s, kapTopR(p)) : shapeRadius(s);
+  const outline = s.shape === 'bloem' ? 'flower' : s.shape === 'tandwiel' ? 'gear' : 'round';
+  return { H: s.H, r: (z) => f(mirrored ? s.H - z : z), n: s.n, outline };
+}
+
+/** Points of a profile for a lathe: [r, z] from bottom to top, closed to the axis at both ends. */
+export function profilePoints(prof: { H: number; r: (z: number) => number }, steps = 48): [number, number][] {
+  const pts: [number, number][] = [[0, 0]];
+  for (let k = 0; k <= steps; k++) {
+    const z = (prof.H * k) / steps;
+    const r = prof.r(z);
+    pts.push([Number.isFinite(r) ? Math.max(0.1, r) : 0.1, z]);
+  }
+  pts.push([0, prof.H]);
+  return pts;
 }
 
 export function numberDef(defs: ParamDef[], key: string): NumberParam | null {
