@@ -22,6 +22,8 @@ export interface GizmoCtx {
   active(): boolean;
   /** Commit a dragged value: one undo step and a real build. */
   commit(key: string, value: number): void;
+  /** Values while dragging (null when the drag ends), e.g. for live readouts. */
+  dragging?(p: Params | null): void;
 }
 
 const NS = 'http://www.w3.org/2000/svg';
@@ -53,15 +55,28 @@ export class Gizmo {
   /** Values committed but not yet built (keeps the preview and the handles in place). */
   private pending: Params | null = null;
   private hoverKey: string | null = null;
+  private off: () => void;
+  private abort = new AbortController();
 
   constructor(
     private svg: SVGSVGElement,
     private ctx: GizmoCtx,
   ) {
-    ctx.viewer.addFrameListener(() => this.layout());
-    window.addEventListener('keydown', (e) => {
-      if (e.key === 'Escape' && this.drag) this.cancel();
-    });
+    this.off = ctx.viewer.addFrameListener(() => this.layout());
+    window.addEventListener(
+      'keydown',
+      (e) => {
+        if (e.key === 'Escape' && this.drag) this.cancel();
+      },
+      { signal: this.abort.signal },
+    );
+  }
+
+  destroy() {
+    this.cancel();
+    this.off();
+    this.abort.abort();
+    this.svg.replaceChildren();
   }
 
   /** Params as the handles should show them (dragging / not yet built). */
@@ -172,6 +187,7 @@ export class Gizmo {
       g.dataset.key = k.h.key;
       g.setAttribute('role', 'slider');
       g.setAttribute('aria-label', k.h.label);
+      g.setAttribute('aria-valuetext', formatHandle(k.h, Number(p[k.h.key])));
       g.innerHTML =
         k.h.id === 'variant'
           ? '<circle class="gz-hit" r="16"/><rect class="gz-dot" x="-6" y="-6" width="12" height="12" rx="2" transform="rotate(45)"/>'
@@ -225,6 +241,7 @@ export class Gizmo {
       if (val !== d.value) {
         d.value = val;
         this.preview();
+        this.ctx.dragging?.(this.shown());
       }
       this.ctx.viewer.requestRender();
     };
@@ -249,7 +266,10 @@ export class Gizmo {
     if (commit && d.value !== d.start) {
       this.pending = { ...this.ctx.params(), [d.handle.key]: d.value };
       this.ctx.commit(d.handle.key, d.value);
-    } else this.restore();
+    } else {
+      this.restore();
+      this.ctx.dragging?.(null);
+    }
     this.ctx.viewer.requestRender();
   }
 
@@ -258,6 +278,7 @@ export class Gizmo {
     this.drag = null;
     this.ctx.viewer.setOrbit(true);
     this.restore();
+    this.ctx.dragging?.(null);
   }
 
   private restore() {

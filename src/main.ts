@@ -712,6 +712,7 @@ function onParam(key: string, value: ParamValue, final: boolean) {
 }
 
 function undo() {
+  if (designer?.busy) return;
   const p = hist.undo();
   if (!p) return;
   state.params = { ...p };
@@ -719,6 +720,7 @@ function undo() {
 }
 
 function redo() {
+  if (designer?.busy) return;
   const p = hist.redo();
   if (!p) return;
   state.params = { ...p };
@@ -768,6 +770,7 @@ function mountDesigner(tool: ToolDef) {
   $('#right-tabs').hidden = !on;
   $('#stage-tabs').hidden = !on;
   $('#sheet-handle').hidden = !on;
+  $('#nodeview').hidden = true;
   setRightTab('inspect');
   setStageTab('3d');
   setSheet(false);
@@ -969,7 +972,7 @@ function setupChrome() {
         return;
       }
     }
-    if (!designer || typing || mod || document.querySelector('dialog[open], .picker')) return;
+    if (!designer || designer.busy || typing || mod || document.querySelector('dialog[open], .picker')) return;
     if (e.key === 'Delete' && !t.closest('.nv-svg')) {
       e.preventDefault();
       designer.deleteSelected();

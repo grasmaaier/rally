@@ -33,6 +33,18 @@ Verder:
 - **Boodschappenlijst**: gewicht en meters per onderdeel met de dichtheid van het gekozen filament, hoeveel rollen per kleur je moet kopen (met % gebruikt en indicatieve prijs), tips voor transparant filament, waarschuwingen (PLA bij een lamp, ABS op een open printer, TPU of CF in de AMS lite) en of het aantal kleuren in de AMS van je printer past. Te kopiëren of te printen.
 - Licht en donker thema, werkt ook op telefoon en tablet.
 
+## Lampontwerper (proef bij Lampen)
+
+Bij **Lampen** ontwerp je zonder lang formulier:
+
+- **Klik in het model** op een segment, de kap, de voet of de plafondkap: alleen de instellingen van dat onderdeel verschijnen rechts (**Eigenschappen**). Klik naast het model voor de hele lamp. Met de muis licht een onderdeel op als je eroverheen beweegt.
+- **Stapel** (links): de segmenten in de volgorde waarin ze hangen of staan, met vorm, maat en kleur. Sleep aan de grip om de volgorde te wijzigen (Alt+pijltjes kan ook), voeg met **+** een vorm toe uit het vormenraster, dupliceer, keer om of verwijder (maximaal acht segmenten).
+- **Grepen in de viewer**: sleep de maatpijlen voor hoogte en diameter (met maat in mm) of de blauwe greep voor de vormvariant (afronding, platte kant, diameter boven …). Een vorm blijft die vorm: de grepen veranderen alleen de eigen instellingen. **Shift** rondt af op 5 mm / 5 %. Tijdens het slepen zie je meteen een snel voorbeeld; bij loslaten wordt het echte model berekend.
+- **Nodes** (tab boven de viewer): dezelfde lamp als schakels → Stapel → Lamp, met fitting, voet/plafondkap en kaplagen. Klik om te bewerken, sleep een segment tussen andere om het te verplaatsen, sleep de achtergrond om te schuiven en scroll om te zoomen.
+- **Ongedaan maken / opnieuw** voor elke wijziging (Ctrl+Z, Ctrl+Shift+Z of Ctrl+Y, of de knoppen); een hele sleepbeweging is één stap.
+- **Bibliotheek**: bewaar ontwerpen met een plaatje in deze browser, laad, hernoem of verwijder ze. **Delen** kopieert een link met het hele ontwerp.
+- **Alle instellingen** opent het oude volledige formulier. De andere ontwerpen gebruiken het formulier zoals altijd, in hetzelfde lichte of donkere thema. Op een telefoon staan de eigenschappen in een uitschuifpaneel onderaan.
+
 ## Starten
 
 ```bash

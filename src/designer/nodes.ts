@@ -97,6 +97,7 @@ export class NodeView {
   private world: SVGGElement;
   private bar: HTMLElement;
   private fitted = false;
+  private observer: ResizeObserver;
 
   constructor(
     private host: HTMLElement,
@@ -136,12 +137,14 @@ export class NodeView {
       }
     });
     this.svg.addEventListener('pointerdown', (e) => this.onDown(e));
-    new ResizeObserver(() => {
+    this.observer = new ResizeObserver(() => {
       if (!this.fitted && host.clientWidth > 0) this.fit();
-    }).observe(host);
+    });
+    this.observer.observe(host);
   }
 
   destroy() {
+    this.observer.disconnect();
     this.host.innerHTML = '';
   }
 

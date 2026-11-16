@@ -31,7 +31,7 @@ interface ThemeX extends Theme {
 }
 
 const LIGHT: ThemeX = {
-  background: '#e9eaec', plate: '#3a3d42', gridMinor: '#4a4e55', gridMajor: '#61666e', volume: '#9aa3ad',
+  background: '#e9eaec', plate: '#d9dbdf', gridMinor: '#c9ccd1', gridMajor: '#b4b8be', volume: '#9aa3ad',
   shadow: 0.34, highlight: '#3b82f6', hover: '#93b8f5', axes: ['#d9534f', '#3e9b5c', '#3f6fd8'],
 };
 const DARK: ThemeX = {
@@ -221,8 +221,11 @@ export class Viewer {
   }
 
   /** Called after every rendered frame (camera moves, resizes, new content). */
-  addFrameListener(f: () => void) {
+  addFrameListener(f: () => void): () => void {
     this.frameListeners.push(f);
+    return () => {
+      this.frameListeners = this.frameListeners.filter((x) => x !== f);
+    };
   }
 
   requestRender() {

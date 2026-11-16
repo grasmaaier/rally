@@ -85,6 +85,7 @@ export class LampDesigner {
   private flashTimer: number | undefined;
   private tab: '3d' | 'nodes' = '3d';
   private alive = true;
+  private abort = new AbortController();
 
   constructor(
     private host: DesignerHost,
@@ -108,6 +109,7 @@ export class LampDesigner {
       parts: () => host.result()?.parts ?? null,
       active: () => this.alive && this.tab === '3d' && host.assembled(),
       commit: (key, value) => host.apply({ ...host.params(), [key]: value }, null, true),
+      dragging: (p) => this.inspector?.sync(p ?? host.params()),
     });
     this.nodes = new NodeView(els.nodeview, {
       params: () => host.params(),
@@ -116,17 +118,23 @@ export class LampDesigner {
       edit: (fn, next) => this.edit(fn, next),
       flash: (m) => this.flash(m),
     });
-    els.outliner.addEventListener('click', (e) => this.onOutlinerClick(e));
+    els.outliner.addEventListener('click', (e) => this.onOutlinerClick(e), { signal: this.abort.signal });
     this.setupReorder();
     this.renderAll();
   }
 
+  /** A handle is being dragged (keyboard shortcuts wait). */
+  get busy() {
+    return this.gizmo.dragging;
+  }
+
   destroy() {
     this.alive = false;
+    this.abort.abort();
+    this.gizmo.destroy();
     this.host.viewer.onPick = null;
     this.host.viewer.onHover = null;
     this.host.viewer.setHighlight([], []);
-    this.els.gizmo.replaceChildren();
     this.els.outliner.innerHTML = '';
     this.els.inspector.innerHTML = '';
     this.nodes.destroy();
@@ -320,6 +328,7 @@ export class LampDesigner {
   /** Drag segments in the outliner to reorder them (mouse and touch via the grip). */
   private setupReorder() {
     const root = this.els.outliner;
+    const signal = this.abort.signal;
     root.addEventListener('keydown', (e) => {
       const item = (e.target as HTMLElement).closest<HTMLElement>('.ol-item');
       if (!item) return;
@@ -335,7 +344,7 @@ export class LampDesigner {
         const k = items.indexOf(item) + (e.key === 'ArrowUp' ? -1 : 1);
         items[Math.max(0, Math.min(items.length - 1, k))]?.focus();
       }
-    });
+    }, { signal });
     root.addEventListener('pointerdown', (e) => {
       const t = e.target as HTMLElement;
       const item = t.closest<HTMLElement>('.ol-seg');
@@ -387,7 +396,7 @@ export class LampDesigner {
       window.addEventListener('pointermove', move, { passive: false });
       window.addEventListener('pointerup', up);
       window.addEventListener('pointercancel', up);
-    });
+    }, { signal });
   }
 
   private renderInspector() {
