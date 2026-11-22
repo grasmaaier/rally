@@ -169,7 +169,10 @@ async function runBuild() {
   try {
     const res = await client.build(tool.id, params, state.printer);
     if (my === token) {
+      const prev = state.result;
       state.result = res;
+      // a design that asks for another view (e.g. the lamp's fit test: the print plate) switches to it once
+      if (prev && prev.defaultView !== res.defaultView && res.scene?.length) state.view = res.defaultView;
       showError(null);
       render();
       designer?.built();
