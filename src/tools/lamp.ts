@@ -899,13 +899,11 @@ function insertDiscs(all: Piece[], c: Ctx, extra: number, notes: string[]) {
   // shells with room for the hubs
   for (const pc of all) {
     if (pc.role !== 'shell') continue;
-    const before = pc.shell!.rims.map((r) => r.ro);
     pc.shell = shellProfile(pc.spec!, c.texDepth, wall, { inMin: s.shellIn, hubs: pc.hubs ?? [] });
     const grown = pc.shell.grown;
     for (const f of [0, 1] as const) {
       if (grown[f] > 1) notes.push(`${pc.name}: opening ${(f === 0) === c.pendant ? 'onder' : 'boven'} Ø${(2 * pc.shell.rims[f].ro).toFixed(0)} mm (ruimte voor de buis${pc.hubs?.some((h) => h.face === f) ? ' en de moer van de schijf' : ''}).`);
     }
-    void before;
   }
   // disc radius (covers both rims, room for posts) and the centring grooves for the rims
   for (const { pc, lo, up } of discs) {

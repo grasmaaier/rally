@@ -1,6 +1,6 @@
 import type { Manifold, ManifoldToplevel } from 'manifold-3d';
 import type { ParamDef, Params } from '../core/types';
-import { UserError, bool, num, str } from '../core/types';
+import { UserError, num, str } from '../core/types';
 import { TAU, clamp } from '../geom/helpers';
 import {
   axialPlay, externalTapered, heights, helixU, internalTapered, leadOf, mergeHeights, ringsOf, selfLocking, threadSegs, wallSolid,
@@ -555,5 +555,3 @@ export function threadInfo(s: TubeSys): string {
   const l = tubeLocking(s);
   return `Ø${s.D} mm, 2 gangen × 4 mm (8 mm per slag), diepte ${s.thread.depth} mm, 45°-flanken · speling ${s.c.toFixed(2)} mm · spoedhoek ${l.lead.toFixed(1)}° < wrijvingshoek ~${l.friction.toFixed(0)}°: zelfremmend`;
 }
-
-export const usePrinted = (p: Params) => printed(p) && !bool(p, 'fitTest');

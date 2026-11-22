@@ -120,18 +120,14 @@ describe('buisstukken en moeren', () => {
           // turned past the play it collides: the threads really interlock
           const off = place(disc, dz, rot + (TAU * (sc.play + 0.3)) / 8, flip);
           expect(tube.intersect(off).volume()).toBeGreaterThan(1);
-          // the radial gap: grow the disc inward by less than the clearance → still free
         }
       }
       // smallest gap: a nut with a little less clearance than the design still fits, with more it does not
-      const tight = tubeSys({ tubeD: '24', threadPlay: c * 0.5 } as Params);
-      const nutTight = discSolid(M, tight, { R: 30, t: DISC.t, hub: 0, grooves: [] });
       const rot = meshTurn(sc.thread, { z: 0, rot: 0, flip: false }, { z: 15, flip: false });
       const grown = tubePieceSolid(M, { ...sc, R: sc.R + c * 0.4 }, { index: 2, len: validLen(sc, 12), cup: null, female: false, stub: false });
       expect(grown.intersect(place(discSolid(M, sc, { R: 30, t: DISC.t, hub: 0, grooves: [] }), 15, rot)).volume()).toBeLessThan(0.05);
       const grown2 = tubePieceSolid(M, { ...sc, R: sc.R + c * 1.3 }, { index: 2, len: validLen(sc, 12), cup: null, female: false, stub: false });
       expect(grown2.intersect(place(discSolid(M, sc, { R: 30, t: DISC.t, hub: 0, grooves: [] }), 15, rot)).volume()).toBeGreaterThan(0.05);
-      void nutTight;
     }
   });
 
