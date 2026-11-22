@@ -474,13 +474,19 @@ export interface TopCapSpec {
   grooves: Groove[];
 }
 
-/** Room above the nut: the tube may stand up to one pitch further, then the stub, then a knot in the cord. */
+/**
+ * Inside the top cap: the thread (the tube may end up to one pitch past the
+ * nut length: piece lengths come in whole pitches), a 45° cone, the cavity for
+ * the coupling stub and a knot in the cord, a cone up to the cable hole.
+ */
 export function topCapLayout(s: TubeSys) {
   const cav = Math.max(s.stub.R + 1.2, 8.5);
-  const zCav = s.nut + s.thread.pitch + s.stub.len + 10;
+  const thread = s.nut + s.thread.pitch;
+  const wide = s.R + s.c + 0.6;
+  const zCav = thread + Math.max(0, wide - cav) + s.stub.len + 10;
   const hole = 3.5;
   const zRoof = zCav + (cav - hole);
-  return { cav, zCav, hole, H: zRoof + 2.2, minR: Math.max(s.R + s.c + 4, cav + 3) };
+  return { cav, thread, wide, zCav, hole, H: zRoof + 2.2, minR: Math.max(s.R + s.c + 4, cav + 3) };
 }
 
 /** Top cap of a pendant: nut on the tube, cavity for the coupling stub and the cord knot, cable hole on top. */
@@ -499,15 +505,15 @@ export function topCapSolid(M: ManifoldToplevel, s: TubeSys, d: TopCapSpec): Man
       return dd >= rf ? R : R - rf + Math.sqrt(Math.max(0, rf * rf - (rf - dd) ** 2));
     }),
   };
-  const wide = s.R + s.c + 0.6;
+  const { wide, thread } = L;
   const inner: Wall = {
     segs: s.segs,
     rings: [
-      ...ringsOf(heights(0, s.nut, DZ), (z, th) => internalTapered(t, s.R, s.c, helixU(t, z, th), z, Infinity)),
+      ...ringsOf(heights(0, thread, DZ), (z, th) => internalTapered(t, s.R, s.c, helixU(t, z, th), z, Infinity)),
       // above the thread: a 45° cone in to the cavity, the cavity, a cone up to the cable hole
-      { z: s.nut, r: () => wide },
-      ...ringsOf([s.nut + Math.max(0, wide - L.cav), L.zCav, L.zCav + (L.cav - L.hole), L.H], (z) =>
-        Math.max(L.hole, wide - (z - s.nut), z <= L.zCav ? L.cav : L.cav - (z - L.zCav)),
+      { z: thread, r: () => wide },
+      ...ringsOf([thread + Math.max(0, wide - L.cav), L.zCav, L.zCav + (L.cav - L.hole), L.H], (z) =>
+        Math.max(L.hole, wide - (z - thread), z <= L.zCav ? L.cav : L.cav - (z - L.zCav)),
       ),
     ],
   };

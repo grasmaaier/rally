@@ -640,9 +640,13 @@ export const VASE_WALL_MM = 0.45;
 export const INFILL = 0.15;
 export const FILAMENT_DIAMETER_MM = 1.75;
 
-/** Printed plastic volume (mm³): shell plus 15% infill, or the single wall of a spiral vase. */
+/**
+ * Printed plastic volume (mm³): shell plus 15% infill, or the single wall of a
+ * spiral vase (never more than the part itself: a thin open shell modelled at
+ * its vase wall counts both of its surfaces in the area).
+ */
 export function printedVolume(p: EstimateInput): number {
-  if (p.estimate === 'vase') return p.area * VASE_WALL_MM;
+  if (p.estimate === 'vase') return Math.min(p.area * VASE_WALL_MM, p.volume);
   const shell = Math.min(p.volume, p.area * SHELL_MM);
   return shell + (p.volume - shell) * INFILL;
 }

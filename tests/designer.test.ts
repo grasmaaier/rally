@@ -103,7 +103,7 @@ describe('lamp model: reorder, insert, delete', () => {
   });
 
   it('gives every lamp parameter (but the count) to exactly one inspector', () => {
-    const sels: Sel[] = [LAMP, { kind: 'socket' }, { kind: 'layers' }, { kind: 'base' }, { kind: 'canopy' }, ...Array.from({ length: MAX_SEGMENTS }, (_, i) => ({ kind: 'seg', slot: i + 1 }) as Sel)];
+    const sels: Sel[] = [LAMP, { kind: 'tube' }, { kind: 'socket' }, { kind: 'layers' }, { kind: 'closed' }, { kind: 'base' }, { kind: 'canopy' }, ...Array.from({ length: MAX_SEGMENTS }, (_, i) => ({ kind: 'seg', slot: i + 1 }) as Sel)];
     for (const d of defs) {
       if (d.type === 'group' || MANAGED_KEYS.has(d.key)) continue;
       const owners = sels.filter((s) => defsFor(s, defs).some((x) => x.type !== 'group' && x.key === d.key));

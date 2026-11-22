@@ -42,7 +42,7 @@ export const NODE_H = 58;
 const GAP = 26;
 const COL = { layers: 0, seg: 250, mid: 530, lamp: 800 };
 
-const GLOBAL_LINE: Record<GlobalKind, keyof typeof ICONS> = { lamp: 'lamp', socket: 'socket', layers: 'layers', base: 'base', canopy: 'canopy' };
+const GLOBAL_LINE: Record<GlobalKind, keyof typeof ICONS> = { lamp: 'lamp', tube: 'tube', socket: 'socket', layers: 'layers', closed: 'closed', base: 'base', canopy: 'canopy' };
 
 /** Default graph layout for these parameters (pure, for tests). */
 export function nodeGraph(p: Params): { nodes: GNode[]; edges: GEdge[] } {
@@ -61,6 +61,10 @@ export function nodeGraph(p: Params): { nodes: GNode[]; edges: GEdge[] } {
       nodes.push({ id: 'layers', sel: { kind: 'layers' }, kind: 'global', x: COL.layers, y: y0 + i * (NODE_H + GAP), title: selTitle({ kind: 'layers' }, p), sub: `${p.layers ?? 1} laag/lagen`, icon: { line: 'layers' } });
       edges.push({ from: 'layers', to: `seg:${s.slot}` });
     }
+    if (s.shape === 'kap' && g.has('closed')) {
+      nodes.push({ id: 'closed', sel: { kind: 'closed' }, kind: 'global', x: COL.layers, y: y0 + i * (NODE_H + GAP) + NODE_H + GAP, title: selTitle({ kind: 'closed' }, p), sub: p.closed === true ? 'tweede kap' : 'uit', icon: { line: 'closed' } });
+      edges.push({ from: 'closed', to: `seg:${s.slot}` });
+    }
   });
   const colH = segs.length * (NODE_H + GAP) - GAP;
   const mid = y0 + colH / 2 - NODE_H / 2;
@@ -70,6 +74,10 @@ export function nodeGraph(p: Params): { nodes: GNode[]; edges: GEdge[] } {
   edges.push({ from: 'stack', to: 'lamp' });
   nodes.push({ id: 'socket', sel: { kind: 'socket' }, kind: 'global', x: COL.mid, y: mid - NODE_H - 46, title: selTitle({ kind: 'socket' }, p), sub: String(p.socket ?? 'e27').toUpperCase(), icon: { line: 'socket' } });
   edges.push({ from: 'socket', to: 'lamp' });
+  if (g.has('tube')) {
+    nodes.push({ id: 'tube', sel: { kind: 'tube' }, kind: 'global', x: COL.mid, y: mid - 2 * (NODE_H + 46), title: selTitle({ kind: 'tube' }, p), sub: p.connection === 'm10' ? 'M10 (gekocht)' : `schroefbuis Ø${p.tubeD ?? 24}`, icon: { line: 'tube' } });
+    edges.push({ from: 'tube', to: 'lamp' });
+  }
   const end: GlobalKind = isPendant(p) ? 'canopy' : 'base';
   nodes.push({ id: end, sel: { kind: end }, kind: 'global', x: COL.mid, y: mid + NODE_H + 46, title: selTitle({ kind: end }, p), sub: end === 'base' ? `Ø${p.baseD} mm` : p.canopy === false ? 'uit' : `Ø${p.canopyD} mm`, icon: { line: GLOBAL_LINE[end] } });
   edges.push({ from: end, to: 'lamp' });

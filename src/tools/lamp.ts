@@ -390,14 +390,16 @@ function bodySamples(pc: Piece, c: Ctx): LatheSample[] {
       if (pc.layer) return shellSamples(pc, c, (z) => raw(z) * ring(z), tex);
       const flange = POST_HOLE + 4;
       const seam = pc.seam;
-      // pendant: rim at the bottom; table lamp: the bowl opens upward
-      const out = sampleRange(0, h, DZ, (z) => {
-        const ceiling = z >= h - pc.ceil;
+      const open = h - pc.ceil;
+      const at = (z: number): Omit<LatheSample, 'z'> => {
+        const ceiling = z > open;
         let i = ceiling ? c.bore : z <= flange ? pc.anchorR : Infinity;
         // closed lamp: a thick band at the rim carries the threaded neck, opening out at 45°; plain (no texture) at the seam
         if (seam && !ceiling) i = Math.min(i, seam.neckIn + z);
         return { o: raw(z) * ring(z), i, tex: seam ? tex * smoothstep(4, 9, z) : tex, wall: ceiling ? SOLID_WALL : c.shadeWall };
-      });
+      };
+      // pendant: rim at the bottom; table lamp: the bowl opens upward. The ceiling face is flat (whatever rests on it)
+      const out = [...sampleRange(0, open, DZ, at), ...sampleRange(Math.min(h, open + 0.01), h, DZ, at)];
       return c.pendant ? out : mirrorSamples(out);
     }
     case 'laag':
@@ -2034,6 +2036,7 @@ const BLUE = '#2f5aa8';
 const BLACK = '#2b2b2e';
 const PINK = '#e7a3b0';
 const SAGE = '#8fae8b';
+const ORANGE = '#e07b39';
 
 const presets: Preset[] = [
   {
@@ -2077,7 +2080,7 @@ const presets: Preset[] = [
     values: {
       lampType: 'pendant', socket: 'e27', bulb27: 'g95', canopyColor: YELLOW,
       ...stack(
-        { shape: 'koepel', D: 170, H: 62, v: 0, color: YELLOW },
+        { shape: 'koepel', D: 170, H: 62, v: 25, color: YELLOW },
         { shape: 'stijlen', D: 80, H: 34, n: 3, v: 20, color: BLACK },
         { shape: 'schijf', D: 240, H: 8, v: 30, color: RED },
         { shape: 'stijlen', D: 80, H: 34, n: 3, v: 20, color: BLACK },
@@ -2144,7 +2147,7 @@ const presets: Preset[] = [
       lampType: 'table', socket: 'e27', bulb27: 'g80', baseShape: 'trap', baseD: 150, baseH: 40, baseColor: BLUE,
       ...stack(
         { shape: 'tandwiel', D: 120, H: 14, n: 18, v: 50, color: YELLOW },
-        { shape: 'kussen', D: 100, H: 34, v: 80, color: BLUE },
+        { shape: 'kussen', D: 100, H: 40, v: 60, color: BLUE },
         { shape: 'tandwiel', D: 140, H: 14, n: 22, v: 50, color: RED },
         { shape: 'bol', D: 80, H: 70, v: 25, color: YELLOW },
       ),
@@ -2207,7 +2210,40 @@ const presets: Preset[] = [
       ...stack(
         { shape: 'kap', kap: 'cilinder', D: 190, H: 150, color: W },
         { shape: 'hals', D: 24, H: 60, color: BLACK },
-        { shape: 'tol', D: 76, H: 70, n: 2, v: 30, color: BLACK },
+        { shape: 'tol', D: 76, H: 70, n: 2, v: 40, color: BLACK },
+      ),
+    },
+  },
+  {
+    name: 'Dichte bol (hanglamp)',
+    values: {
+      lampType: 'pendant', socket: 'e27', bulb27: 'a60', closed: true, closedShape: 'spiegel', centerBulb: true, vents: true,
+      ...stack(
+        { shape: 'cilinder', D: 46, H: 30, v: 40, color: W },
+        { shape: 'kap', kap: 'koepel', D: 250, H: 125, tex: 'ribbels', texN: 64, color: W },
+      ),
+    },
+  },
+  {
+    name: 'Dichte dubbele kegel (hanglamp)',
+    values: {
+      lampType: 'pendant', socket: 'e27', bulb27: 'a60', closed: true, closedShape: 'spiegel', centerBulb: true, vents: true, canopyColor: ORANGE,
+      ...stack(
+        { shape: 'bol', D: 60, H: 48, v: 30, color: ORANGE },
+        { shape: 'kap', kap: 'kegel', D: 230, H: 120, v: 10, tex: 'plisse', texN: 120, color: ORANGE },
+      ),
+    },
+  },
+  {
+    name: 'Lange totem (hanglamp, buis in 2 stukken)',
+    values: {
+      lampType: 'pendant', socket: 'e27', bulb27: 'a60', tubeExtra: 120, texDepth: 1.2, canopyColor: BLACK,
+      ...stack(
+        { shape: 'cilinder', D: 56, H: 40, v: 40, tex: 'ringen', texN: 5, color: BLACK },
+        { shape: 'bol', D: 96, H: 80, v: 25, tex: 'plisse', texN: 110, color: TERRA },
+        { shape: 'diabolo', D: 110, H: 80, n: 1, v: 40, tex: 'ribbels', texN: 60, color: SAND },
+        { shape: 'tol', D: 110, H: 70, n: 1, v: 20, tex: 'plisse', texN: 120, color: TEAL },
+        { shape: 'kap', kap: 'klok', D: 220, H: 130, v: 25, color: W },
       ),
     },
   },
@@ -2253,8 +2289,11 @@ function randomize(): Partial<Params> {
       });
     }
   }
+  // sometimes a closed lamp (two shades screwed together)
+  const closed = hasKap && layered.layers === '1' && Math.random() < 0.25;
   return {
     ...layered,
+    closed,
     lampType: isPendant ? 'pendant' : 'table',
     socket: 'e27',
     bulb27: isPendant ? pick(['a60', 'g95', 'st64']) : pick(['g95', 'g125', 'g80']),
@@ -2272,7 +2311,7 @@ export const lampTool: ToolDef = {
   short: 'Lampen',
   icon: 'M9 18h6M10 21h4M12 3a6 6 0 0 0-4 10.5c.8.8 1 1.5 1 2.5h6c0-1 .2-1.7 1-2.5A6 6 0 0 0 12 3',
   description:
-    'Stapelbare hang- en tafellampen: kies tot acht segmenten (bol, tol, kussen, bloem, tandwiel, ziggurat, kap, lamellen…) met plissé, ribbels of ringen, elk in een eigen kleur. Alles schuift over een standaard draadbuis M10x1 met E27/E14/G9-fitting.',
+    'Stapelbare hang- en tafellampen: kies tot acht segmenten (bol, tol, kussen, bloem, tandwiel, ziggurat, kap, lamellen…) met plissé, ribbels of ringen, elk in een eigen kleur. Alles schroeft vast op een geprinte holle schroefbuis met een klik voor de fitting; holle sierdelen, dichte lampen en een pasproef. Of de oude manier met een draadbuis M10x1.',
   params,
   presets,
   randomize,

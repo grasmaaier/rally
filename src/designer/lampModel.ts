@@ -18,6 +18,8 @@ export type Sel =
   | { kind: 'lamp' }
   | { kind: 'seg'; slot: number }
   | { kind: 'layers' }
+  | { kind: 'closed' }
+  | { kind: 'tube' }
   | { kind: 'socket' }
   | { kind: 'base' }
   | { kind: 'canopy' };
@@ -38,7 +40,7 @@ export function parseSel(id: string | undefined | null): Sel {
     const slot = Number(m[1]);
     return slot >= 1 && slot <= MAX_SEGMENTS ? { kind: 'seg', slot } : LAMP;
   }
-  if (id === 'layers' || id === 'socket' || id === 'base' || id === 'canopy' || id === 'lamp') return { kind: id };
+  if (id === 'layers' || id === 'closed' || id === 'tube' || id === 'socket' || id === 'base' || id === 'canopy' || id === 'lamp') return { kind: id };
   return LAMP;
 }
 
@@ -50,6 +52,8 @@ export function segmentCount(p: Params): number {
 }
 
 export const isPendant = (p: Params) => p.lampType === 'pendant';
+/** The printed screw tube (default) rather than a bought M10 tube. */
+export const isPrintedTube = (p: Params) => p.connection !== 'm10';
 
 export function hasKap(p: Params): boolean {
   const n = segmentCount(p);
@@ -63,6 +67,7 @@ export function selValid(s: Sel, p: Params): boolean {
     case 'seg':
       return s.slot >= 1 && s.slot <= segmentCount(p);
     case 'layers':
+    case 'closed':
       return hasKap(p);
     case 'base':
       return !isPendant(p);
@@ -232,8 +237,10 @@ export function toggleFlip(p: Params, slot: number): Params {
 // Which parameters belong to a selection
 
 const GLOBAL_KEYS: Record<Exclude<GlobalKind, 'layers'>, string[]> = {
-  lamp: ['lampType', 'texDepth', 'shadeWall'],
-  socket: ['socket', 'bulb27', 'bulb14', 'clearance', 'cover'],
+  lamp: ['lampType', 'texDepth', 'shadeWall', 'shellPrint', 'shellWall'],
+  tube: ['connection', 'tubeD', 'threadPlay', 'tubeExtra', 'fitTest'],
+  socket: ['socket', 'bulb27', 'bulb14', 'clearance', 'cover', 'fitSize', 'fitRingD', 'fitRingH', 'fitBodyD', 'fitTopD', 'fitTopH', 'fitH'],
+  closed: ['closed', 'closedShape', 'closedH', 'centerBulb', 'seamPlay', 'vents'],
   base: ['baseShape', 'baseD', 'baseH', 'baseColor', 'ballast', 'felt'],
   canopy: ['cableCap', 'canopy', 'canopyD', 'canopyH', 'canopyScrews', 'canopyColor'],
 };
@@ -259,14 +266,16 @@ function ownsKey(s: Sel, key: string): boolean {
 export function defsFor(s: Sel, defs: ParamDef[]): ParamDef[] {
   const out: ParamDef[] = [];
   let group: ParamDef | null = null;
+  let groups = 0;
   for (const d of defs) {
     if (d.type === 'group') {
       group = d;
       continue;
     }
     if (!ownsKey(s, d.key)) continue;
-    // segment headers ("Segment 3") repeat what the inspector title says
-    if (group && s.kind === 'layers') out.push(group);
+    // segment headers ("Segment 3") and the first header of an element repeat what the inspector title says
+    if (group && (s.kind === 'layers' || (s.kind !== 'seg' && groups > 0))) out.push(group);
+    if (group) groups++;
     group = null;
     out.push(d);
   }
@@ -275,8 +284,10 @@ export function defsFor(s: Sel, defs: ParamDef[]): ParamDef[] {
 
 export const SEL_TITLES: Record<GlobalKind, string> = {
   lamp: 'Lamp',
+  tube: 'Buis & draad',
   socket: 'Fitting & lamp',
   layers: 'Kap in lagen',
+  closed: 'Dichte lamp',
   base: 'Voet',
   canopy: 'Plafondkap',
 };
@@ -288,8 +299,8 @@ export function selTitle(s: Sel, p: Params): string {
 
 /** Global elements shown in the outliner for these parameters. */
 export function globalEntries(p: Params): GlobalKind[] {
-  const out: GlobalKind[] = ['lamp', 'socket'];
-  if (hasKap(p)) out.push('layers');
+  const out: GlobalKind[] = ['lamp', 'tube', 'socket'];
+  if (hasKap(p)) out.push('layers', 'closed');
   out.push(isPendant(p) ? 'canopy' : 'base');
   return out;
 }

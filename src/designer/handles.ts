@@ -8,6 +8,7 @@
  */
 import type { NumberParam, ParamDef, Params } from '../core/types';
 import { CORE_R, SOCKETS, kapRadius, shapeRadius, type SegSpec } from '../tools/lampParts';
+import { FIT_GUIDE } from '../tools/lampTube';
 import { isPendant, slotKey, type Sel } from './lampModel';
 
 export interface Handle {
@@ -62,6 +63,11 @@ function specOf(p: Params, slot: number): SegSpec {
 export function kapTopR(p: Params): number {
   const s = SOCKETS[String(p.socket)] ?? SOCKETS.e27;
   const wall = clamp(Number(p.shadeWall) || 1.2, 0.8, 3);
+  if (p.connection !== 'm10') {
+    // printed tube: the click cup around the shade ring hangs under the ceiling
+    const ring = p.fitSize === 'custom' ? Number(p.fitRingD) || FIT_GUIDE.e27.ringD : (FIT_GUIDE[String(p.socket)] ?? FIT_GUIDE.e27).ringD;
+    return ring / 2 + 2.5 + 1.5 + wall + 0.5;
+  }
   return s.d / 2 + 2 * wall + 3;
 }
 

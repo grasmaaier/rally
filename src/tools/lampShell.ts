@@ -39,8 +39,9 @@ export interface ShellProfile {
   o: number[];
   wall: number;
   pattern: LathePattern;
-  /** Weight of the vertical texture (fades out at the rims). */
+  /** Weight of the vertical texture (fades out at the rims over `fade` mm). */
   tex: (z: number) => number;
+  fade: number;
   H: number;
   /** Largest radius against the design (< 1 = narrowed for the 45° walls). */
   shrunk: number;
@@ -114,6 +115,7 @@ export function shellProfile(spec: SegSpec, texDepth: number, wall: number, need
     wall,
     pattern,
     tex,
+    fade,
     H,
     shrunk: Math.max(...o) / designed,
     rims: [rim(0), rim(o.length - 1)],
@@ -146,24 +148,58 @@ export function solidVolume(p: ShellProfile, bore: number): number {
 }
 
 /**
+ * Inner radius at every ring of one column: the outer polyline (zs, o) eroded
+ * by a disc of radius w (an exact offset square to the wall: 45° flanks get
+ * w·√2 radially, inward V's an arc, outward corners a sharp corner).
+ */
+function erode(zs: ArrayLike<number>, o: (k: number) => number, w: (k: number) => number, K: number, out: Float64Array, stride: number, off: number) {
+  for (let k = 0; k < K; k++) {
+    const zk = zs[k];
+    const wk = w(k);
+    let best = o(k) - wk;
+    // segments within reach on both sides
+    for (let m = k; m > 0 && zk - zs[m] < wk; m--) best = Math.min(best, segMin(zs[m - 1], o(m - 1), zs[m], o(m), zk, wk));
+    for (let m = k; m < K - 1 && zs[m] - zk < wk; m++) best = Math.min(best, segMin(zs[m], o(m), zs[m + 1], o(m + 1), zk, wk));
+    out[k * stride + off] = best;
+  }
+}
+
+/** Smallest o(z') − √(w² − (z' − zk)²) over a straight piece of the outer wall. */
+function segMin(za: number, oa: number, zb: number, ob: number, zk: number, w: number) {
+  const lo = Math.max(za, zk - w);
+  const hi = Math.min(zb, zk + w);
+  if (hi < lo) return Infinity;
+  const s = zb > za ? (ob - oa) / (zb - za) : 0;
+  const f = (z: number) => oa + s * (z - za) - Math.sqrt(Math.max(0, w * w - (z - zk) ** 2));
+  const star = clamp(zk - (s * w) / Math.sqrt(1 + s * s), lo, hi);
+  return Math.min(f(lo), f(hi), f(star));
+}
+
+/**
  * Mesh grid of a shell in print orientation (`flipped`: printed upside down).
  * Outer = envelope × pattern; every column keeps its walls within 45° both
- * ways; inner = outer − wall (square to the wall), never closer to the axis
- * than `needIn(z)` (stack z).
+ * ways; inner = the outer wall offset by the wall thickness (square to the
+ * wall, also across the pleats), never closer to the axis than `needIn(z)`
+ * (stack z).
  */
 export function shellGrid(p: ShellProfile, flipped: boolean, needIn: (z: number) => number): ShadeGrid {
   const H = p.H;
   let tol = 0.02;
   const samples: LatheSample[] = p.zs.map((z, k) => ({ z, o: p.o[k], i: 0, tex: p.tex(z), wall: p.wall }));
-  const fade = Math.max(3, 2 * (1 - p.pattern.min) * 30);
   let segs = p.pattern.segs;
+  const w = p.wall;
   const pick = () => {
-    const keep = simplifySamples(samples, tol).map((q) => q.z);
+    const kinks = simplifySamples(samples, tol).map((q) => q.z);
+    const keep = [...kinks];
+    // rings beside every bend so the offset inner wall (arcs in the hollows) is represented
+    for (const z of kinks) for (const d of [-w, -w / 2, w / 2, w]) if (z + d > 0 && z + d < H) keep.push(z + d);
     // dense rings where the texture fades in and out
-    if (p.pattern.min < 1) for (const z of p.zs) if (z < fade + 1 || H - z < fade + 1) keep.push(z);
+    if (p.pattern.min < 1) for (const z of p.zs) if (z < p.fade + 1 || H - z < p.fade + 1) keep.push(z);
     keep.sort((a, b) => a - b);
     const out: number[] = [];
-    for (const z of keep) if (!out.length || z - out[out.length - 1] > 1e-6) out.push(z);
+    for (const z of keep) if (!out.length || z - out[out.length - 1] > 0.05) out.push(z);
+    out[out.length - 1] = H;
+    out[0] = 0;
     return out;
   };
   let zs = pick();
@@ -195,8 +231,8 @@ export function shellGrid(p: ShellProfile, flipped: boolean, needIn: (z: number)
   for (let k = 0; k < K; k++) {
     const z = stackZ(k);
     const e = env(z);
-    const w = p.tex(z);
-    for (let j = 0; j < segs; j++) o[k * segs + j] = e * (1 - w * (1 - fac[j]));
+    const t = p.tex(z);
+    for (let j = 0; j < segs; j++) o[k * segs + j] = e * (1 - t * (1 - fac[j]));
   }
   // every column within 45° both ways (the fading texture adds a little slope)
   for (let k = 1; k < K; k++) {
@@ -207,25 +243,22 @@ export function shellGrid(p: ShellProfile, flipped: boolean, needIn: (z: number)
     const st = pz[k + 1] - pz[k];
     for (let j = 0; j < segs; j++) o[k * segs + j] = Math.min(o[k * segs + j], o[(k + 1) * segs + j] + st);
   }
+  // the wall square to the pleats (steepest side around), then offset along the axis exactly
   const dth = TAU / segs;
-  for (let k = 0; k < K; k++) {
-    // slope along the axis over about ±1 mm (smooth, so the inner wall does not step at kinks)
-    let a = k;
-    let b = k;
-    while (a > 0 && pz[k] - pz[a] < 1) a--;
-    while (b < K - 1 && pz[b] - pz[k] < 1) b++;
-    const dz = Math.max(1e-6, pz[b] - pz[a]);
-    const need = needIn(stackZ(k));
+  const wAt = new Float64Array(K * segs);
+  for (let k = 0; k < K; k++)
     for (let j = 0; j < segs; j++) {
       const at = k * segs + j;
       const r = o[at];
-      const rz = (o[b * segs + j] - o[a * segs + j]) / dz;
       const jp = (j + 1) % segs;
       const jm = (j + segs - 1) % segs;
       const rt = Math.max(Math.abs(o[k * segs + jp] - r), Math.abs(r - o[k * segs + jm])) / dth / Math.max(r, 1);
-      const sec = clamp(Math.sqrt(1 + rz * rz + rt * rt), 1, 3);
-      inn[at] = Math.max(need, r - p.wall * sec);
+      wAt[at] = w * clamp(Math.sqrt(1 + rt * rt), 1, 3);
     }
+  for (let j = 0; j < segs; j++) erode(pz, (k) => o[k * segs + j], (k) => wAt[k * segs + j], K, inn, segs, j);
+  for (let k = 0; k < K; k++) {
+    const need = needIn(stackZ(k));
+    for (let j = 0; j < segs; j++) inn[k * segs + j] = Math.max(need, inn[k * segs + j]);
   }
   // cavity roofs: in print orientation the inner wall never narrows faster than 45° going up
   for (let k = K - 2; k >= 0; k--) {
