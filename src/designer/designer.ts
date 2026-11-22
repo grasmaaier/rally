@@ -49,7 +49,7 @@ export function selSubtitle(s: Sel, p: Params): string {
     case 'lamp':
       return `${isPendant(p) ? 'Hanglamp' : 'Tafellamp'} · ${segmentCount(p)} ${segmentCount(p) === 1 ? 'segment' : 'segmenten'}`;
     case 'socket':
-      return `${String(p.socket ?? 'e27').toUpperCase()}${p.socket === 'e27' ? ` · ${String(p.bulb27 ?? '').toUpperCase()}` : p.socket === 'e14' ? ` · ${String(p.bulb14 ?? '').toUpperCase()}` : ''}`;
+      return `${String(p.socket ?? 'e27').toUpperCase()}${p.socket === 'e27' ? ` · ${String(p.bulb27 ?? '').toUpperCase()}` : p.socket === 'e14' ? ` · ${String(p.bulb14 ?? '').toUpperCase()}` : ''}${isPrintedTube(p) ? ' · klik' : ''}`;
     case 'layers':
       return `${p.layers ?? 1} ${String(p.layers) === '1' ? 'laag' : 'lagen'}`;
     case 'closed':

@@ -1098,10 +1098,11 @@ function build(p: Params, ctx: Parameters<ToolDef['build']>[1]): BuildOutput {
 
   // tube posts at an open end of the stack have nothing to stand on: make them a neck
   const toNeck = (pc: Piece, why: string) => {
+    const D = Math.ceil(Math.max(26, 2 * c.core));
     pc.role = 'seg';
-    pc.spec = { ...pc.spec!, shape: 'hals', D: 26, v: 0.2, tex: 'glad' };
+    pc.spec = { ...pc.spec!, shape: 'hals', D, v: 0.2, tex: 'glad' };
     pc.name = `${pc.spec.slot}. Hals`;
-    notes.push(`Segment ${pc.spec.slot}: ${why} — er is een hals (Ø26) van gemaakt.`);
+    notes.push(`Segment ${pc.spec.slot}: ${why} — er is een hals (Ø${D}) van gemaakt.`);
   };
   all.forEach((pc, i) => {
     if (pc.role !== 'posts' || pc.chain) return;
@@ -1650,7 +1651,7 @@ function build(p: Params, ctx: Parameters<ToolDef['build']>[1]): BuildOutput {
       scene.push({ kind: 'part', part: idx, matrix: mat });
       const h = pieceHeight(tube, pcs);
       masses.push({ m: grams(solid), z: zOff + (dir * -h) / 2 });
-      rows.push(['–', `${name.replace(' met klik', '')}${i === 0 ? ' · met klik voor de fitting' : ''}`, `Ø${(i === 0 ? 2 * click.Rc : tube.D).toFixed(0)} × ${h.toFixed(0)} mm`, colorName(color), 'rechtop, dop op het bed']);
+      rows.push(['–', `${name.replace(' met klik', '')}${i === 0 ? ' · met klik voor de fitting' : ''}`, `Ø${(i === 0 ? 2 * click.Rc : tube.D).toFixed(0)} × ${h.toFixed(0)} mm`, colorName(color), i === 0 ? 'rechtop, dop op het bed' : 'rechtop']);
       tubeRows.push({ len, h });
       zt += len;
       rt += jointTurn(tube);

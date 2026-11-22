@@ -148,8 +148,10 @@ export function handlesFor(sel: Sel, p: Params): ElementHandles | null {
     const mirrored = s.shape === 'kap' ? !pend : s.flip && s.shape !== 'stijlen' && s.shape !== 'lamel' && s.shape !== 'hals';
     const wz = (z: number) => (mirrored ? s.H - z : z);
     // the build stacks from the bottom up (also for pendants), so the bottom stays put
+    // a closed lamp with the bulb in the middle sets the height of the kap itself
+    const autoH = s.shape === 'kap' && p.closed === true && p.centerBulb !== false;
     const handles: Handle[] = [
-      { id: 'height', key: slotKey(sel.slot, 'H'), axis: 'z', r: 0, z: s.H, perMm: 1, label: 'Hoogte', unit: 'mm', snap: 5 },
+      ...(autoH ? [] : [{ id: 'height', key: slotKey(sel.slot, 'H'), axis: 'z', r: 0, z: s.H, perMm: 1, label: 'Hoogte', unit: 'mm', snap: 5 } as Handle]),
       { id: 'diameter', key: slotKey(sel.slot, 'D'), axis: 'r', r: s.D / 2, z: wz(widestZ(s, topR)), perMm: 2, label: 'Ø', unit: 'mm', snap: 5 },
     ];
     const vh = s.shape === 'hals' || s.shape === 'stijlen' ? null : variantHandle(s, topR);
