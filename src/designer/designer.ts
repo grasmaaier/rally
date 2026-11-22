@@ -10,7 +10,7 @@ import { buildInspector, escapeHtml, type InspectorHandle } from './controls';
 import { Gizmo } from './gizmo';
 import { icon, shapeIcon, type IconName } from './icons';
 import {
-  DesignError, LAMP, MAX_SEGMENTS, defsFor, deleteSegment, duplicateSegment, globalEntries, insertSegment, isPendant, moveSegment, parseSel, sameSel,
+  DesignError, LAMP, MAX_SEGMENTS, defsFor, deleteSegment, duplicateSegment, globalEntries, insertSegment, isPendant, isPrintedTube, moveSegment, parseSel, sameSel,
   segmentCount, segmentInfo, segments, selKey, selTitle, selValid, toggleFlip, type GlobalKind, type Sel,
 } from './lampModel';
 import { NodeView } from './nodes';
@@ -37,7 +37,7 @@ export interface DesignerEls {
   gizmo: SVGSVGElement;
 }
 
-export const GLOBAL_ICON: Record<GlobalKind, IconName> = { lamp: 'lamp', socket: 'socket', layers: 'layers', base: 'base', canopy: 'canopy' };
+export const GLOBAL_ICON: Record<GlobalKind, IconName> = { lamp: 'lamp', tube: 'tube', socket: 'socket', layers: 'layers', closed: 'closed', base: 'base', canopy: 'canopy' };
 
 /** Subtitle of an outliner / node entry. */
 export function selSubtitle(s: Sel, p: Params): string {
@@ -49,9 +49,15 @@ export function selSubtitle(s: Sel, p: Params): string {
     case 'lamp':
       return `${isPendant(p) ? 'Hanglamp' : 'Tafellamp'} · ${segmentCount(p)} ${segmentCount(p) === 1 ? 'segment' : 'segmenten'}`;
     case 'socket':
-      return `${String(p.socket ?? 'e27').toUpperCase()}${p.socket === 'e27' ? ` · ${String(p.bulb27 ?? '').toUpperCase()}` : p.socket === 'e14' ? ` · ${String(p.bulb14 ?? '').toUpperCase()}` : ''}`;
+      return `${String(p.socket ?? 'e27').toUpperCase()}${p.socket === 'e27' ? ` · ${String(p.bulb27 ?? '').toUpperCase()}` : p.socket === 'e14' ? ` · ${String(p.bulb14 ?? '').toUpperCase()}` : ''}${isPrintedTube(p) ? ' · klik' : ''}`;
     case 'layers':
       return `${p.layers ?? 1} ${String(p.layers) === '1' ? 'laag' : 'lagen'}`;
+    case 'closed':
+      return p.closed === true ? `tweede kap · ${p.centerBulb === false ? 'naad vrij' : 'lamp in het midden'}` : 'uit';
+    case 'tube':
+      return !isPrintedTube(p)
+        ? 'M10 draadbuis (gekocht)'
+        : `${p.fitTest === true ? 'Pasproef · ' : ''}schroefbuis Ø${p.tubeD ?? 24} · speling ${Number(p.threadPlay ?? 0.3).toFixed(2).replace('.', ',')} mm${Number(p.tubeExtra) > 0 ? ` · +${p.tubeExtra} mm` : ''}`;
     case 'base':
       return `Ø${p.baseD} × ${p.baseH} mm`;
     case 'canopy':
@@ -64,11 +70,13 @@ export function outlineOrder(p: Params): Sel[] {
   const g = new Set(globalEntries(p));
   const out: Sel[] = [LAMP];
   const pend = isPendant(p);
+  if (g.has('tube')) out.push({ kind: 'tube' });
   if (pend && g.has('canopy')) out.push({ kind: 'canopy' });
   if (!pend) out.push({ kind: 'socket' });
   for (const s of segments(p)) {
     out.push({ kind: 'seg', slot: s.slot });
     if (s.shape === 'kap' && g.has('layers')) out.push({ kind: 'layers' });
+    if (s.shape === 'kap' && g.has('closed')) out.push({ kind: 'closed' });
   }
   if (pend) out.push({ kind: 'socket' });
   if (!pend && g.has('base')) out.push({ kind: 'base' });
@@ -294,7 +302,7 @@ export class LampDesigner {
         </div>`;
       }
       const g = s.kind as GlobalKind;
-      return `<div class="ol-item ol-global ol-${g}${on ? ' is-sel' : ''}${g === 'layers' ? ' ol-sub' : ''}" role="option" tabindex="0" aria-selected="${on}" data-sel="${key}">
+      return `<div class="ol-item ol-global ol-${g}${on ? ' is-sel' : ''}${g === 'layers' || g === 'closed' ? ' ol-sub' : ''}" role="option" tabindex="0" aria-selected="${on}" data-sel="${key}">
         <span class="ol-ico">${icon(GLOBAL_ICON[g])}</span>
         <span class="ol-name"><b>${escapeHtml(selTitle(s, p))}</b><small>${escapeHtml(selSubtitle(s, p))}</small></span>
       </div>`;

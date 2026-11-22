@@ -103,7 +103,7 @@ describe('lamp model: reorder, insert, delete', () => {
   });
 
   it('gives every lamp parameter (but the count) to exactly one inspector', () => {
-    const sels: Sel[] = [LAMP, { kind: 'socket' }, { kind: 'layers' }, { kind: 'base' }, { kind: 'canopy' }, ...Array.from({ length: MAX_SEGMENTS }, (_, i) => ({ kind: 'seg', slot: i + 1 }) as Sel)];
+    const sels: Sel[] = [LAMP, { kind: 'tube' }, { kind: 'socket' }, { kind: 'layers' }, { kind: 'closed' }, { kind: 'base' }, { kind: 'canopy' }, ...Array.from({ length: MAX_SEGMENTS }, (_, i) => ({ kind: 'seg', slot: i + 1 }) as Sel)];
     for (const d of defs) {
       if (d.type === 'group' || MANAGED_KEYS.has(d.key)) continue;
       const owners = sels.filter((s) => defsFor(s, defs).some((x) => x.type !== 'group' && x.key === d.key));
@@ -363,6 +363,9 @@ describe('click-to-select mapping', () => {
     const designs: [string, Params][] = [
       ['standaard', base],
       ['hanglamp', lamp({ lampType: 'pendant' })],
+      ['pasproef', lamp({ fitTest: true })],
+      ['M10', lamp({ connection: 'm10', lampType: 'pendant' })],
+      ['dichte tafellamp', lamp({ count: 2, s1Shape: 'kap', s1Kap: 'koepel', s1D: 220, s1H: 110, closed: true, socket: 'e14', bulb14: 'g45' })],
       ...lampTool.presets!.map((p) => [p.name, lamp(p.values)] as [string, Params]),
     ];
     for (const [name, p] of designs) {
@@ -374,8 +377,8 @@ describe('click-to-select mapping', () => {
         expect(selKey(s), `${name}: ${part.name} → ${part.select}`).toBe(part.select);
         expect(selValid(s, p), `${name}: ${part.name} → ${part.select}`).toBe(true);
       }
-      // every segment can be picked in the viewport
-      for (let i = 1; i <= segmentCount(p); i++) expect(res.parts.some((q) => q.select === `seg:${i}`), `${name}: segment ${i}`).toBe(true);
+      // every segment can be picked in the viewport (the fit test has no segments)
+      if (p.fitTest !== true) for (let i = 1; i <= segmentCount(p); i++) expect(res.parts.some((q) => q.select === `seg:${i}`), `${name}: segment ${i}`).toBe(true);
     }
   });
 });

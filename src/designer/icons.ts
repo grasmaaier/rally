@@ -123,6 +123,8 @@ export const ICONS = {
   layers: 'm12 3 9 5-9 5-9-5zM3 13l9 5 9-5',
   base: 'M5 20h14M7 20c0-3 2-5 5-5s5 2 5 5M12 15V4',
   canopy: 'M5 4h14M7 4c0 3 2 5 5 5s5-2 5-5M12 9v11',
+  tube: 'M10 2h4v20h-4zM10 5l4 2M10 9l4 2M10 13l4 2M10 17l4 2',
+  closed: 'M12 2v3M12 5a7.5 7.5 0 1 0 0 15 7.5 7.5 0 1 0 0-15zM4.5 12.5h15',
   edit: 'M4 20h4L19 9l-4-4L4 16zM13 7l4 4',
   save: 'M5 3h11l3 3v15H5zM8 3v6h8V3M8 21v-7h8v7',
   fit: 'M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5',

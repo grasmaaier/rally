@@ -8,6 +8,7 @@
  */
 import type { NumberParam, ParamDef, Params } from '../core/types';
 import { CORE_R, SOCKETS, kapRadius, shapeRadius, type SegSpec } from '../tools/lampParts';
+import { FIT_GUIDE } from '../tools/lampTube';
 import { isPendant, slotKey, type Sel } from './lampModel';
 
 export interface Handle {
@@ -62,6 +63,11 @@ function specOf(p: Params, slot: number): SegSpec {
 export function kapTopR(p: Params): number {
   const s = SOCKETS[String(p.socket)] ?? SOCKETS.e27;
   const wall = clamp(Number(p.shadeWall) || 1.2, 0.8, 3);
+  if (p.connection !== 'm10') {
+    // printed tube: the click cup around the shade ring hangs under the ceiling
+    const ring = p.fitSize === 'custom' ? Number(p.fitRingD) || FIT_GUIDE.e27.ringD : (FIT_GUIDE[String(p.socket)] ?? FIT_GUIDE.e27).ringD;
+    return ring / 2 + 2.5 + 1.5 + wall + 0.5;
+  }
   return s.d / 2 + 2 * wall + 3;
 }
 
@@ -142,8 +148,10 @@ export function handlesFor(sel: Sel, p: Params): ElementHandles | null {
     const mirrored = s.shape === 'kap' ? !pend : s.flip && s.shape !== 'stijlen' && s.shape !== 'lamel' && s.shape !== 'hals';
     const wz = (z: number) => (mirrored ? s.H - z : z);
     // the build stacks from the bottom up (also for pendants), so the bottom stays put
+    // a closed lamp with the bulb in the middle sets the height of the kap itself
+    const autoH = s.shape === 'kap' && p.closed === true && p.centerBulb !== false;
     const handles: Handle[] = [
-      { id: 'height', key: slotKey(sel.slot, 'H'), axis: 'z', r: 0, z: s.H, perMm: 1, label: 'Hoogte', unit: 'mm', snap: 5 },
+      ...(autoH ? [] : [{ id: 'height', key: slotKey(sel.slot, 'H'), axis: 'z', r: 0, z: s.H, perMm: 1, label: 'Hoogte', unit: 'mm', snap: 5 } as Handle]),
       { id: 'diameter', key: slotKey(sel.slot, 'D'), axis: 'r', r: s.D / 2, z: wz(widestZ(s, topR)), perMm: 2, label: 'Ø', unit: 'mm', snap: 5 },
     ];
     const vh = s.shape === 'hals' || s.shape === 'stijlen' ? null : variantHandle(s, topR);

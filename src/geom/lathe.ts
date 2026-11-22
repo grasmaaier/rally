@@ -141,11 +141,13 @@ const BUDGET = 260000;
  * wall, flat annuli at the bottom and top. The inner radius must stay below
  * the pattern's valleys (see `printable`).
  */
+/** Segments around the inner wall of a lathe solid (parts joined to it can match them). */
+export const latheInnerSegs = (samples: LatheSample[]) => Math.round(clamp((TAU * Math.max(...samples.map((q) => q.i))) / 1.6, 32, 256));
+
 export function latheSolid(M: ManifoldToplevel, samples: LatheSample[], pattern: LathePattern): Manifold {
   let tol = 0.02;
   let rings = simplifySamples(samples, tol);
-  const maxI = Math.max(...samples.map((q) => q.i));
-  const nI = Math.round(clamp((TAU * maxI) / 1.6, 32, 256));
+  const nI = latheInnerSegs(samples);
   while (rings.length * (pattern.segs + nI) > BUDGET && tol < 0.5) {
     tol *= 1.6;
     rings = simplifySamples(samples, tol);

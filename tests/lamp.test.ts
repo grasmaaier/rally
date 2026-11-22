@@ -14,7 +14,8 @@ beforeAll(async () => {
 });
 afterEach(() => collect());
 
-const base = defaultsOf(tool.params);
+/** These tests cover the bought M10 tube (the old system); the printed screw tube has its own tests. */
+const base = { ...defaultsOf(tool.params), connection: 'm10' } as Params;
 const params = (v: Partial<Params>) => ({ ...base, ...v }) as Params;
 
 /** Segment values for slot i. */
