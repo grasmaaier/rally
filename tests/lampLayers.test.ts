@@ -14,7 +14,8 @@ beforeAll(async () => {
 });
 afterEach(() => collect());
 
-const base = defaultsOf(tool.params);
+/** Layered shades on the bought M10 tube (the printed screw tube is covered in lampTube.test.ts). */
+const base = { ...defaultsOf(tool.params), connection: 'm10' } as Params;
 const PATTERNS = LAYER_PATTERNS.map((o) => o.value);
 const W = '#f2efe8';
 
