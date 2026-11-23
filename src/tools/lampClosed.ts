@@ -73,7 +73,7 @@ export function closedParams(kapOn: (p: Params) => boolean): ParamDef[] {
     { type: 'number', key: 'seamPlay', label: 'Speling naad', min: 0.2, max: 1, step: 0.05, unit: 'mm', default: 0.5, show: on, help: 'Ruimte in de schroefdraad van de naad. Grote ronde delen zijn nooit helemaal rond: liever iets ruimer.' },
     {
       type: 'select', key: 'vent', label: 'Ventilatie', options: VENT_OPTIONS, default: 'verborgen', show: on,
-      help: 'Verborgen: de warme lucht gaat door kanaaltjes in het plafond van de kap en komt naar buiten in de naad onder het deel erboven; koele lucht komt binnen door smalle sleufjes in de naad tussen de kappen (of door de opening). Van opzij zie je geen gaten. Zichtbare gaatjes: ruitjes in de kap en gaatjes in de bodem. Geen: alleen een LED-lamp tot ~5 W, in PETG.',
+      help: 'Verborgen: kanaaltjes door het plafond van de kap komen uit in de naad tegen het volgende deel op de buis, en smalle sleufjes in de naad tussen de kappen (of de opening) maken de luchtstroom rond. Van opzij zie je geen gaten. Zichtbare gaatjes: ruitjes in de kap en gaatjes in de bodem. Geen: alleen een LED-lamp tot ~5 W, in PETG.',
     },
   ];
 }

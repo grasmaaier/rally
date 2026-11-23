@@ -1300,6 +1300,8 @@ function build(p: Params, ctx: Parameters<ToolDef['build']>[1]): BuildOutput {
     if (pc.role === 'seg' || pc.role === 'kap' || pc.role === 'lamel') {
       const s = pc.spec!;
       pc.pattern = SPACERS.has(s.shape) && s.shape !== 'hals' ? ROUND : patternFor(s, c.texDepth);
+      // fluted ring: tell when fewer ribs fit than asked
+      if (s.shape === 'ribring') fluteOf(s.D / 2, s.v, s.n, s.groove ?? 0.45, s.round ?? 0.8, notes, pc.name);
     }
     if (pc.role === 'cap') pc.minInner = CAP.holeR;
   }
@@ -2084,7 +2086,9 @@ function build(p: Params, ctx: Parameters<ToolDef['build']>[1]): BuildOutput {
     const v = closed!.vent;
     const air =
       v === 'verborgen'
-        ? `De warme lucht ontsnapt verborgen door kanaaltjes in het plafond van de kap en ${kap2.inward ? 'de opening' : 'smalle sleufjes in de naad'} laat koele lucht binnen: van opzij zie je geen gaten.`
+        ? isPendant
+          ? `De warme lucht ontsnapt verborgen door kanaaltjes in het plafond van de kap (naar buiten in de naad erboven) en ${kap2.inward ? 'de opening' : 'smalle sleufjes in de naad'} laat koele lucht binnen: van opzij zie je geen gaten.`
+          : `Koele lucht komt verborgen binnen door kanaaltjes in de bodem van de kap (in de naad eronder) en de warme lucht ontsnapt door ${kap2.inward ? 'de opening' : 'smalle sleufjes in de naad'}: van opzij zie je geen gaten.`
         : v === 'gaatjes'
           ? 'De ventilatiegaatjes boven en onder houden de lucht in beweging.'
           : kap2.inward
