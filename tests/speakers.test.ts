@@ -329,6 +329,37 @@ describe('speakerhouders', () => {
     });
   });
 
+  it(`willekeurige instellingen op alle printers: geldig, zonder support, of een leesbare melding`, async () => {
+    let seed = 4242;
+    const rnd = () => {
+      seed = (seed * 1103515245 + 12345) % 2147483648;
+      return seed / 2147483648;
+    };
+    const samples = Number(process.env.FUZZ_SPEAKERS ?? 24);
+    const failures: string[] = [];
+    for (let i = 0; i < samples; i++) {
+      const p: Params = { ...base };
+      for (const d of tool.params) {
+        if (d.type === 'number') p[d.key] = Math.round((d.min + rnd() * (d.max - d.min)) / (d.step ?? 1)) * (d.step ?? 1);
+        else if (d.type === 'select') p[d.key] = d.options[Math.floor(rnd() * d.options.length)].value;
+        else if (d.type === 'bool') p[d.key] = rnd() < 0.5;
+      }
+      const printer = PRINTERS[Math.floor(rnd() * PRINTERS.length)];
+      try {
+        const res = await buildTool(M, tool, p, printer);
+        for (const part of res.parts) {
+          if (!(part.volume > 0)) failures.push(`${JSON.stringify(p)} → leeg ${part.name}`);
+          if (!fitsOn(printer, part.size)) failures.push(`${JSON.stringify(p)} → ${part.name} past niet op ${printer.name}`);
+          const ov = part.name.includes('geprinte draad') ? overhangOutside(part, 4) : overhangArea(part);
+          if (ov > 5) failures.push(`${JSON.stringify(p)} → ${part.name} overhang ${ov.toFixed(0)} mm²`);
+        }
+      } catch (err) {
+        if ((err as { user?: boolean })?.user !== true) failures.push(`${JSON.stringify(p)} → ${String((err as Error)?.message ?? err)}`);
+      }
+    }
+    expect(failures).toEqual([]);
+  });
+
   describe('grenzen', () => {
     it('te lange arm voor een kleine printer: leesbare melding met de maximale lengte', async () => {
       const mini = PRINTERS.find((pr) => pr.id === 'a1mini')!;

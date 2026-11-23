@@ -971,7 +971,6 @@ export function plateauSolid(M: ManifoldToplevel, s: ShelfGeo): Manifold {
   return solid;
 }
 
-
 /** Pivot knob with sleeve: sleeve top (bears on the plateau) at z = 0, knob below it along +z. */
 export function pivotSolid(M: ManifoldToplevel, s: ShelfGeo): Manifold {
   const { dsl, Lsl, pivot, pb } = s;
@@ -1055,7 +1054,7 @@ function friction(clampN: number, mu: number, rIn: number, rOut: number, faces: 
   return (faces * mu * clampN * rm) / 1000;
 }
 
-/** Bolt preload (N) from a hand-tightened knob: about 2.5 N per mm knob diameter of torque arm, torque ≈ 0.2·F·d. */
+/** Bolt preload (N) from a hand-tightened knob: torque ≈ 25 N·mm per mm of knob diameter (0,8 N·m on 32 mm), F = T / (0.2·d). */
 function preload(knobD: number, b: Bolt) {
   const torqueNmm = clamp(knobD * 25, 250, 1000);
   return torqueNmm / (0.2 * b.d);
@@ -1068,7 +1067,14 @@ function armBuild(p: Params, ctx: { M: ManifoldToplevel; printer: PrinterProfile
   const warnings: string[] = [];
   const notes = [...g.notes];
   const n = clamp(Math.round(num(p, 'count')), 1, 4);
-  if (!poseClear(g, 0, 0)) throw new UserError(`De speaker raakt zo de arm, de muurplaat of de muur. Maak de arm langer (minstens ≈ ${minArmFor(g)} mm) of kies een kleinere speaker.`);
+  if (!poseClear(g, 0, 0)) {
+    const need = minArmFor(g);
+    throw new UserError(
+      need <= 250
+        ? `De speaker raakt zo de arm, de muurplaat of de muur. Maak de arm langer (minstens ≈ ${need} mm) of kies een kleinere speaker.`
+        : 'Deze speaker is te groot voor een arm: hij raakt de muur. Kies het plankje met draaiplateau of controleer de maten.',
+    );
+  }
   const R = armRanges(g, num(p, 'tilt'));
   const tilt = clamp(num(p, 'tilt'), R.tiltMin, R.tiltMax);
   const pan = clamp(num(p, 'pan'), R.panMin, R.panMax);
@@ -1138,7 +1144,8 @@ function armBuild(p: Params, ctx: { M: ManifoldToplevel; printer: PrinterProfile
   // joints
   const fTilt = preload(g.tiltKnob.D, g.cb);
   const tiltHold = friction(fTilt, 0.25, g.cb.clear / 2 + 0.5, Math.min(g.rc, g.rt) - 0.5, 2);
-  const comArm = g.back ? g.ds + g.spk.D / 2 : Math.hypot(g.ds + g.spk.H / 2, 0) * Math.sin((45 * Math.PI) / 180);
+  // back insert: the speaker hangs in front of the axis; bottom insert: it stands on it, worst at 45° tilt
+  const comArm = g.back ? g.ds + g.spk.D / 2 : (g.ds + g.spk.H / 2) * Math.SQRT1_2;
   const tiltNeed = (Ns * comArm) / 1000;
   const fPan = preload(g.panKnob.D, g.cb);
   const panHold = friction(fPan, 0.25, g.Rs0 + 0.5, g.Rb - 1, 1);
