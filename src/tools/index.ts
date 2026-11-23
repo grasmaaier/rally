@@ -11,7 +11,8 @@ import { lampTool } from './lamp';
 import { generativeTool } from './generative';
 import { woodworkingTool } from './woodworking';
 import { organizersTool } from './organizers';
+import { wallLampTool } from './walllamp';
 
-export const TOOLS: ToolDef[] = [vaseTool, planterTool, clockTool, handlesTool, organizersTool, gridfinityTool, jointsTool, furnitureTool, toothbrushTool, lampTool, generativeTool, woodworkingTool];
+export const TOOLS: ToolDef[] = [vaseTool, planterTool, clockTool, handlesTool, organizersTool, gridfinityTool, jointsTool, furnitureTool, toothbrushTool, lampTool, wallLampTool, generativeTool, woodworkingTool];
 
 export const TOOL_MAP: Record<string, ToolDef> = Object.fromEntries(TOOLS.map((t) => [t.id, t]));
