@@ -226,7 +226,8 @@ function roundRectPts(w: number, h: number, r: number, cx = 0, cy = 0, segs = 6)
  */
 function knobSolid(M: ManifoldToplevel, D: number, H: number, hole: number, pocketAF: number, pocketDepth: number): Manifold {
   const R = D / 2;
-  const n = clamp(Math.round(D / 3.6), 6, 12);
+  // an even number of scallops keeps the knob symmetric (its bounding box centred on the bolt)
+  const n = 2 * clamp(Math.round(D / 7.2), 3, 6);
   const rs = D * 0.12;
   const scallops = Array.from({ length: n }, (_, i) => M.CrossSection.circle(rs, 20).translate([(R + rs * 0.35) * Math.cos((TAU * i) / n), (R + rs * 0.35) * Math.sin((TAU * i) / n)]));
   const outline = M.CrossSection.circle(R, 64).subtract(M.CrossSection.union(scallops));
@@ -561,17 +562,27 @@ export function yokeSolid(M: ManifoldToplevel, g: ArmGeo): Manifold {
   return solid.subtract(M.Manifold.union(cuts));
 }
 
+/**
+ * Where the cheeks meet the plate (y range in the plate frame). For a back
+ * insert the yoke disc lies on the +y side of the head: there the cheek ends
+ * level with its round end, so it cannot swing into the disc when tilting.
+ */
+function cheekSpan(g: ArmGeo): [number, number] {
+  const s = Math.min(g.ph / 2 - 1.5, g.rc + 8);
+  return [-s, g.back ? Math.min(s, g.rc) : s];
+}
+
 /** Head in its plate frame P: tilt axis = x through the origin, speaker plate normal +z. */
 export function headSolid(M: ManifoldToplevel, g: ArmGeo): Manifold {
   const { dp, tp, pw, ph, xin, xout, rc, cb, sb } = g;
   const plate = chamferPrism(M, roundRectPts(pw, ph, 6), dp, dp + tp, 0.8, 1, (u, v, w) => [u, v, w]);
-  const s = Math.min(ph / 2 - 1.5, rc + 8);
+  const [s0, s1] = cheekSpan(g);
   const cheeks: Manifold[] = [];
   for (const side of [-1, 1]) {
     const pts: V3[] = [];
     for (const [x, r] of [[xin, rc], [xout - 1, rc], [xout, rc - 1]] as [number, number][]) for (const [y, z] of circlePts(0, 0, r, 40)) pts.push([side * x, y, z]);
-    for (const x of [xin, xout - 1]) for (const y of [-s, s]) pts.push([side * x, y, dp + 0.5]);
-    for (const y of [-(s - 1), s - 1]) pts.push([side * xout, y, dp + 0.5]);
+    for (const x of [xin, xout - 1]) for (const y of [s0, s1]) pts.push([side * x, y, dp + 0.5]);
+    for (const y of [s0 + 1, s1 - 1]) pts.push([side * xout, y, dp + 0.5]);
     cheeks.push(M.Manifold.hull(pts));
   }
   const solid = M.Manifold.union([plate, ...cheeks]);
@@ -645,6 +656,17 @@ function movingSamples(g: ArmGeo): V3[] {
   const b = speakerBoxP(g);
   const pts = boxSamples(b.min, b.max, 7);
   for (const x of [-g.pw / 2, 0, g.pw / 2]) for (const y of [-g.ph / 2, 0, g.ph / 2]) for (const z of [g.dp, g.dp + g.tp]) pts.push([x, y, z]);
+  // the cheeks: round ends, the edges where they meet the plate, and points along their edges
+  const [s0, s1] = cheekSpan(g);
+  for (const x of [-g.xout, -g.xin, g.xin, g.xout]) {
+    for (const [y, z] of circlePts(0, 0, g.rc, 24)) pts.push([x, y, z]);
+    for (const y of [s0, s1]) for (let k = 0; k <= 6; k++) {
+      const a = (k / 6) * TAU;
+      const yc = g.rc * Math.cos(a);
+      const zc = g.rc * Math.sin(a);
+      for (const t of [0.25, 0.5, 0.75, 1]) pts.push([x, yc + (y - yc) * t, zc + (g.dp - zc) * t]);
+    }
+  }
   return pts;
 }
 
@@ -943,11 +965,13 @@ export function pivotSolid(M: ManifoldToplevel, s: ShelfGeo): Manifold {
   const { dsl, Lsl, pivot, pb } = s;
   const D = pivot.D;
   const cone = Math.max(0, (D - dsl) / 2);
+  // printed sleeve-down the cone carries the knob's chamfered face; printed knob-down it must stay inside the grip scallops
+  const rTop = s.printed ? D / 2 - 0.12 * D * 0.65 - 0.4 : D / 2 - Math.min(1, pivot.Hk / 4);
   const sleeve = M.Manifold.union([
     M.Manifold.cylinder(0.61, dsl / 2 - 0.6, dsl / 2, 48),
     M.Manifold.cylinder(Lsl - 0.6 + 0.01, dsl / 2, dsl / 2, 48).translate([0, 0, 0.6]),
   ]);
-  const cn = M.Manifold.cylinder(cone + 0.01, dsl / 2, D / 2, 64).translate([0, 0, Lsl]);
+  const cn = M.Manifold.cylinder(cone + 0.01, dsl / 2, Math.max(dsl / 2, rTop), 64).translate([0, 0, Lsl]);
   const kb = knobSolid(M, D, Math.max(2, pivot.Hk - cone), 0, 0, 0).translate([0, 0, Lsl + cone]);
   let solid = M.Manifold.union([sleeve, cn, kb]);
   const total = Lsl + cone + Math.max(2, pivot.Hk - cone);
