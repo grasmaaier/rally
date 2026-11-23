@@ -2565,7 +2565,7 @@ const presets: Preset[] = [
     values: {
       lampType: 'pendant', socket: 'e27', bulb27: 'g95', capColor: PINK, canopyColor: PINK, cupColor: BLUE,
       ...stack(
-        { shape: 'ribring', D: 210, H: 16, v: 70, n: 40, groove: 42, round: 90, color: W },
+        { shape: 'ribring', D: 210, H: 16, v: 35, n: 40, groove: 42, round: 90, color: W },
         { shape: 'schijf', D: 84, H: 18, v: 60, color: BLUE, mat: 'mat' },
       ),
     },
@@ -2576,8 +2576,8 @@ const presets: Preset[] = [
       lampType: 'pendant', socket: 'e27', bulb27: 'a60', capColor: BLUE, canopyColor: BLUE,
       ...stack(
         { shape: 'schijf', D: 120, H: 8, v: 30, color: ORANGE, mat: 'mat' },
-        { shape: 'ribring', D: 230, H: 14, v: 70, n: 44, groove: 42, round: 90, color: W },
-        { shape: 'kap', kap: 'cilinder', D: 170, H: 120, v: 0, color: W, mat: 'mat' },
+        { shape: 'ribring', D: 230, H: 14, v: 35, n: 44, groove: 42, round: 90, color: W },
+        { shape: 'kap', kap: 'cilinder', D: 170, H: 150, v: 0, color: W, mat: 'mat' },
       ),
     },
   },
