@@ -40,6 +40,11 @@ import { mountCutters, rateSection, sectionModulus } from './wallhooks';
 //   opens on the print-top side, so it never needs a bridge.
 // - yoke stands on its disc; head lies on its speaker plate; knobs on their
 //   bearing face; cover strips and pads flat.
+// - only exception: the optional printed thread (see isoStud).
+//
+// Cable (arm): an open channel along the side of the arm and down the plate
+// (or straight through the plate into the wall), closed by cover strips that
+// slide into a 45° dovetail, so a cable with its plug can be laid in.
 
 type V3 = [number, number, number];
 
@@ -87,12 +92,7 @@ function stockLength(b: Bolt, need: number): number {
   return L;
 }
 
-/**
- * A bolt held in a knob: `grip` = length from the knob's bearing face to where
- * the bolt end must be. The knob floor (between head and bearing face) takes
- * up the whole difference to the stock length, so the bolt end is always
- * exactly where it was planned (never deeper into the speaker).
- */
+/** A bought bolt whose head is held in a printed knob. */
 export interface KnobBolt {
   L: number;
   /** Knob floor under the head. */
@@ -101,6 +101,12 @@ export interface KnobBolt {
   H: number;
 }
 
+/**
+ * `grip` = length from the knob's bearing face to where the bolt end must be.
+ * The knob floor (between head and bearing face) takes up the whole difference
+ * to the stock length, so the bolt end is always exactly where it was planned
+ * (never deeper into the speaker).
+ */
 function knobBolt(b: Bolt, grip: number, minFloor = 2.6): KnobBolt {
   const L = stockLength(b, grip + minFloor);
   const floor = L - grip;
@@ -254,9 +260,12 @@ function crestDist(P: number, u: number) {
 
 /**
  * Printed external thread that mates with a metal insert: ISO-like 60°
- * profile (the flanks are 60° from horizontal when printed upright, so it
- * prints without support), major diameter reduced by `clearance` per side and
- * a 45° lead-in at the tip. Axis z from 0 to `len`.
+ * profile, major diameter reduced by `clearance` per side and a 45° lead-in at
+ * the tip. Axis z from 0 to `len`. The flanks are 30° from horizontal, so the
+ * underside of each ridge is formally an overhang; it is under 0.5 mm wide and
+ * prints without support at fine layers. A 45° profile would need no such
+ * exception but would hardly engage a 60° metal thread (≈ 0.2 mm), so this is
+ * the only place where the tool accepts a small overhang (and it warns).
  */
 export function isoStud(M: ManifoldToplevel, b: Bolt, len: number, clearance = 0.2): Manifold {
   const P = b.pitch;
@@ -293,8 +302,8 @@ function fixingRoom(p: Params, kind = str(p, 'mount')) {
     const rHead = s.headD / 2 + 0.6;
     const rShank = s.clear / 2 + 0.1;
     const travel = rHead + rShank + 1.5;
-    // the slot runs down from the entry hole to the hanging point b
-    // lip 2.4 + head pocket 3.4 + 1.6 behind it, as the wall hooks' keyholes; the pocket has a 45° tent roof
+    // the slot runs down from the entry hole to the hanging point b; lip 2.4 + head pocket 3.4 + 1.6 behind
+    // it, as the wall hooks' keyholes (whose cutters are reused); the pocket has a 45° tent roof
     return { below: travel + rHead + 1.5, above: rHead + 1.5, half: rHead, apex: rHead * Math.SQRT2 + 1.7 + 0.3, T: 2.4 + 3.4 + 1.6 };
   }
   const headR = s.headD / 2 + 0.3;
