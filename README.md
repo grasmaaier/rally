@@ -57,6 +57,9 @@ npm run build      # productie-build in dist/
 
 De build in `dist/` is een statische site: zet hem op elke webserver of op GitHub Pages.
 
+Zelf verder bouwen in VS Code (installeren, testen, debuggen, een nieuwe tool toevoegen)?
+Zie **[ONTWIKKELEN.md](ONTWIKKELEN.md)**.
+
 ### GitHub Pages
 
 De workflow `.github/workflows/pages.yml` publiceert elke push naar `main` automatisch.
