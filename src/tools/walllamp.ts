@@ -236,7 +236,7 @@ interface Hole2 {
   r: number;
 }
 
-/** Keeps holes on the plate apart and away from the rim, corners and lips. */
+/** Keeps holes on the plate apart, inside the cavity and out of the lock-screw blocks. */
 class Planner {
   taken: Hole2[] = [];
   /** Solid blocks (x0, x1, z0, z1) a hole may not reach into. */
@@ -423,7 +423,7 @@ export function wallLayout(p: Params, M: ManifoldToplevel, printer: PrinterProfi
   const plugHoles: [number, number][] = [];
   const keyholes = plugs === 'sleutelgaten';
   if (plugs === 'schroeven' || keyholes) {
-    // inside the corner blocks of the lock screws, well outside the Ø68 hole
+    // just inside the lock-screw blocks, well outside the Ø68 hole
     const px = Wp / 2 - CH.rabbet - PLATE.cornerW - 5.5;
     const pz = Hp / 2 - 9;
     if (keyholes) plugHoles.push([-px, zb + pz], [px, zb + pz]);
@@ -516,7 +516,7 @@ function bulbLayout(p: Params, ctx: Ctx, f: PlateFrame, notes: string[]): BulbLa
   const Lg = Math.max(2 * r + 2, clamp(num(p, 'bulbL') || 50, 30, 90) - G9_LED.insert);
   const m10 = str(p, 'sockMount') !== 'schroeven';
   const spacing = clamp(num(p, 'sockSpacing') || 24, 8, 50);
-  // behind the bulb: the lips of the housing and the base of the bracket
+  // behind the bulb: the plate, the ribs of the housing and the base of the bracket
   const yLow = Math.max(yb, f.Tp + BR.base);
   const want = str(p, 'bulbPos');
   const auto = want !== 'staand' && want !== 'liggend';
@@ -1309,7 +1309,7 @@ function assembly(L: WallLayout, m10: boolean, reachable: boolean): string {
   steps.push(`${n()}Verbind de draden met de Wago-klemmen: bruin (fase, via de schakelaar) en blauw (nul). Een aardedraad gaat apart in een eigen klem (klasse II, niet aansluiten). Duw de klemmen in de doos of de holte.`);
   steps.push(`${n()}${L.keyholes ? 'Hang de plaat met de sleutelgaten op de schroeven in de pluggen en schroef' : 'Schroef'} de muurplaat met de brede kant naar voren en 2 dozenschroeven M3,5 vast op de schroefpotjes van de inbouwdoos${L.plugHoles.length && !L.keyholes ? ' en zet hem extra vast met de pluggen' : ''}. ${L.keyholes ? 'De sleutelgaten wijzen omhoog.' : 'Boven of onder maakt niet uit: de plaat heeft aan beide kanten gaten voor de borgschroeven.'}`);
   steps.push(`${n()}Schroef de houder met 2 schroeven op de muurplaat en draai de G9 LED-lamp in de fitting.`);
-  steps.push(`${n()}Schuif de kap van ${L.dir === 'down' ? 'boven' : 'onder'} over de muurplaat: de lippen aan de binnenkant haken achter de zijkanten van de plaat. Schuif door tot de kap tegen de plaat stopt.`);
+  steps.push(`${n()}Schuif de kap van ${L.dir === 'down' ? 'boven' : 'onder'} over de muurplaat: de lippen aan de binnenkant haken achter de brede voorrand van de plaat. Schuif door tot de kap tegen de plaat stopt.`);
   steps.push(`${n()}Draai de 2 borgschroeven M3 ${L.dir === 'down' ? 'van boven' : 'van onder'} door de kap in de muurplaat. ${L.reflector ? `Hang de reflector met zijn randje in de ${far} van de kap.` : ''}`.trim());
   steps.push(`${n()}Groep weer aan en testen. Lamp wisselen: ${reachable ? `via de ${far}` : 'borgschroeven los en de kap eraf schuiven'}.`);
   return steps.join('\n');
