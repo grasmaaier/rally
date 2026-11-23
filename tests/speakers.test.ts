@@ -11,6 +11,7 @@ import {
   armRanges,
   bracketSolid,
   headSolid,
+  plateauSolid,
   shelfGeometry,
   shelfSolid,
   speakersTool as tool,
@@ -350,6 +351,27 @@ describe('speakerhouders', () => {
 
     it('ondiep draadgat: leesbare melding', async () => {
       await expect(buildTool(M, tool, params({ style: 'arm', insertDepth: 4 }))).rejects.toMatchObject({ user: true });
+    });
+
+    it.each([0, 15])('plank met alleen rand, kantelwig %s°: draaibout loopt door het plateau tot in de moer', (wedge) => {
+      const p = params({ style: 'shelf', shelfFix: 'rim', wedge });
+      const s = shelfGeometry(p);
+      expect(s.wedge).toBe(wedge);
+      const b = s.pb;
+      // bolt end above the plateau underside: stock length minus the stretch from the head through knob and sleeve
+      const reach = s.pivot.L - (s.Lsl + s.pivot.Hk - b.headH - 0.4);
+      const nutTop = s.topC - s.nutDepth;
+      expect(reach).toBeGreaterThanOrEqual(nutTop + 0.5);
+      expect(reach).toBeLessThanOrEqual(s.topC - 0.3);
+      try {
+        const plat = plateauSolid(M, s);
+        expect(plat.intersect(M.Manifold.cylinder(reach + 1, b.d / 2, b.d / 2, 32).translate([0, 0, -1])).volume()).toBeLessThan(0.01);
+        // the nut sits in its pocket under the surface (flats ±x as the hexagon helper)
+        const nut = M.Manifold.cylinder(b.nutH, b.nutAF / Math.sqrt(3), b.nutAF / Math.sqrt(3), 6).rotate([0, 0, 30]).translate([0, 0, nutTop - b.nutH]);
+        expect(plat.intersect(nut).volume()).toBeLessThan(0.05);
+      } finally {
+        collect();
+      }
     });
 
     it('rand om de speaker maakt het plateau groot genoeg', () => {

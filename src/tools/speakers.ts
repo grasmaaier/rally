@@ -89,8 +89,9 @@ function stockLength(b: Bolt, need: number): number {
 
 /**
  * A bolt held in a knob: `grip` = length from the knob's bearing face to where
- * the bolt end must be (± `slack`). The knob floor (between head and bearing
- * face) absorbs the difference to the stock length.
+ * the bolt end must be. The knob floor (between head and bearing face) takes
+ * up the whole difference to the stock length, so the bolt end is always
+ * exactly where it was planned (never deeper into the speaker).
  */
 export interface KnobBolt {
   L: number;
@@ -100,9 +101,9 @@ export interface KnobBolt {
   H: number;
 }
 
-function knobBolt(b: Bolt, grip: number, minFloor = 2.6, maxFloor = 9): KnobBolt {
+function knobBolt(b: Bolt, grip: number, minFloor = 2.6): KnobBolt {
   const L = stockLength(b, grip + minFloor);
-  const floor = Math.min(maxFloor, L - grip);
+  const floor = L - grip;
   return { L, floor, H: floor + b.headH + 0.4 };
 }
 
@@ -293,7 +294,8 @@ function fixingRoom(p: Params, kind = str(p, 'mount')) {
     const rShank = s.clear / 2 + 0.1;
     const travel = rHead + rShank + 1.5;
     // the slot runs down from the entry hole to the hanging point b
-    return { below: travel + rHead + 1.5, above: rHead + 1.5, half: rHead, apex: rHead * Math.SQRT2 + 1.7 + 0.3, T: 2.4 + 3.4 + 1.6 + rHead * 0 };
+    // lip 2.4 + head pocket 3.4 + 1.6 behind it, as the wall hooks' keyholes; the pocket has a 45° tent roof
+    return { below: travel + rHead + 1.5, above: rHead + 1.5, half: rHead, apex: rHead * Math.SQRT2 + 1.7 + 0.3, T: 2.4 + 3.4 + 1.6 };
   }
   const headR = s.headD / 2 + 0.3;
   return { below: headR + 2, above: headR + 2, half: headR, apex: headR * Math.SQRT2 + 0.3, T: headR - s.clear / 2 + 1.6 };
@@ -314,7 +316,7 @@ export interface ArmGeo {
   zTop: number;
   zBot: number;
   gs: number;
-  /** Fixing points (x, z) on the plate; `hang` = keyhole. */
+  /** Fixing points (x, z) on the plate: the ones above the arm first, the last one below it. */
   fix: Vec2[];
   screwX: number;
   cable: string;
@@ -427,7 +429,8 @@ export function armGeometry(p: Params): ArmGeo {
   const rc = Math.min(14, ha - td - 1.5);
   const g = 0.25;
   // the speaker-bolt knob sits between the cheeks: the tongue sets the room
-  const knobMinD = 2 * (sb.headAF / Math.sqrt(3) + 0.08 + 0.12 * 21 * 0.65 + 1.6);
+  const scallop = 0.12 * 21 * 0.65;
+  const knobMinD = 2 * (sb.headAF / Math.sqrt(3) + 0.08 + scallop + 1.6);
   const Tt = Math.max(cb.nutAF + 0.4 + 5.2, 21, Math.ceil(knobMinD + 1.5 - 2 * g));
   const xin = Tt / 2 + g;
   const tc = Math.max(7, cb.nutH + 3.5);
@@ -459,16 +462,17 @@ export function armGeometry(p: Params): ArmGeo {
   const Yb = Math.max(4, Math.min(Math.sqrt(Math.max(0, (Rb - 1.2) ** 2 - (Tt / 2) ** 2)), Math.sqrt(Math.max(0, (dp - 2) ** 2 - (ha - td) ** 2))));
   // plate under/behind the speaker: smaller than the speaker face, big enough for the cheeks
   const face = back ? Math.min(spk.W, spk.H) : Math.min(spk.W, spk.D);
-  const pw = clamp(face - 16, 2 * xout + 6, 72);
+  // (a smaller plate leaves more room to tilt: its edge swings towards the arm)
+  const pw = clamp(face * 0.55, 2 * xout + 6, 64);
   let ph = pw;
-  if (back) ph = clamp(Math.min(2 * spk.zIns, 2 * (spk.H - spk.zIns)) - 8, Math.max(2 * rc + 4, 30), pw);
+  if (back) ph = clamp(Math.min(2 * spk.zIns, 2 * (spk.H - spk.zIns)) - 8, 2 * rc + 6, pw);
   // pan bolt: knob under the boss, through boss and disc, nut in the tongue
-  const panKb = knobBolt(cb, Ha + zn + cb.nutH + 1.5, 2.6, 9);
+  const panKb = knobBolt(cb, Ha + zn + cb.nutH + 1.5);
   const panKnob = { ...panKb, D: Math.min(32, 2 * Rb - 2) };
   // tilt bolt: knob on one cheek, nut in the other
   const pocket = cb.nutH + 0.4;
   const tiltGrip = 2 * tc + 2 * g + Tt - pocket + cb.nutH + 1.5;
-  const tiltKb = knobBolt(cb, tiltGrip, 2.6, 9);
+  const tiltKb = knobBolt(cb, tiltGrip);
   const tiltKnob = { ...tiltKb, D: 2 * rc };
   return {
     back, inverted: back, W, Rb, Ha, L, Tp, zTop, zBot, gs, fix, screwX, cable, cableD, wc, s0, tr, dc, zc, ypc, cb, sb, printed,
@@ -564,12 +568,13 @@ export function yokeSolid(M: ManifoldToplevel, g: ArmGeo): Manifold {
 
 /**
  * Where the cheeks meet the plate (y range in the plate frame). For a back
- * insert the yoke disc lies on the +y side of the head: there the cheek ends
- * level with its round end, so it cannot swing into the disc when tilting.
+ * insert the yoke disc lies on the +y side of the head: there the cheek edge
+ * rises from its round end towards the plate, so it does not swing into the
+ * disc when the speaker tilts up.
  */
 function cheekSpan(g: ArmGeo): [number, number] {
   const s = Math.min(g.ph / 2 - 1.5, g.rc + 8);
-  return [-s, g.back ? Math.min(s, g.rc) : s];
+  return [-s, g.back ? Math.min(s, g.rc * 0.35) : s];
 }
 
 /** Head in its plate frame P: tilt axis = x through the origin, speaker plate normal +z. */
@@ -676,7 +681,7 @@ export function poseClear(g: ArmGeo, pan: number, tilt: number, samples = moving
   const { W, L, Ha, Tp, zTop, zBot, gs, Rb } = g;
   const m2 = 2.5;
   const knobZ = g.inverted ? [0, g.panKnob.H + 6] : [-Ha - g.panKnob.H - 6, -Ha];
-  const discZ = g.inverted ? [-Ha - g.td - 1, -Ha] : [0, g.td + 1];
+  const discZ = g.inverted ? [-Ha - g.td - 0.6, -Ha] : [0, g.td + 0.6];
   for (const q of samples) {
     const [x, y, z] = applyM4(m, q);
     if (y < 2) return false;
@@ -688,7 +693,7 @@ export function poseClear(g: ArmGeo, pan: number, tilt: number, samples = moving
     const rr = Math.hypot(x, y - L);
     if (rr < Rb + m2 && z > -Ha - m2 && z < m2) return false;
     if (rr < g.panKnob.D / 2 + m2 && z > knobZ[0] && z < knobZ[1]) return false;
-    if (rr < Rb + m2 && z > discZ[0] && z < discZ[1]) return false;
+    if (rr < Rb + 1.2 && z > discZ[0] && z < discZ[1]) return false;
   }
   return true;
 }
@@ -762,6 +767,8 @@ export interface ShelfGeo {
   hLip: number;
   zLock: number;
   lock: boolean;
+  topC: number;
+  nutDepth: number;
   topFix: Vec2[];
   botFix: Vec2[];
   zs1: number;
@@ -804,6 +811,10 @@ export function shelfGeometry(p: Params): ShelfGeo {
     notes.push('De kantelwig kan alleen met "Alleen een opstaande rand": een bout moet haaks door het plateau.');
   }
   const rimH = rim ? num(p, 'rimH') : 0;
+  // plateau top in the middle (higher with a wedge)
+  const topC = tpl + Rp * Math.tan((wedge * Math.PI) / 180);
+  // the nut (rim only) sits upright on the bolt, its top this far under the middle of the top (under the sloped top too)
+  const nutDepth = 2 + (cb.nutAF / Math.sqrt(3) + 0.2) * Math.tan((wedge * Math.PI) / 180);
   const kind = str(p, 'mount');
   const room = fixingRoom(p);
   const roomS = fixingRoom(p, 'screws');
@@ -830,7 +841,7 @@ export function shelfGeometry(p: Params): ShelfGeo {
   const zLock = tpl / 2 - 1;
   // fixings: two at the top in the cavity (screwdriver through holes in the strut), one below the strut foot
   const rAcc = roomS.half + 1.5;
-  const zs1 = -ttop - 1 - rAcc * Math.SQRT2 - (kind === 'keyhole' ? 0 : 0);
+  const zs1 = -ttop - 1 - rAcc * Math.SQRT2;
   const xs = Ws >= 76 ? Ws / 4 : 0;
   const topFix: Vec2[] = xs > 0 ? [[-xs, zs1], [xs, zs1]] : [[0, zs1]];
   const zb = zf - 6 - roomS.above;
@@ -858,16 +869,16 @@ export function shelfGeometry(p: Params): ShelfGeo {
       pivot = { L, floor: Hk - pb.headH - 0.4, H: Hk, D: pivotD, Hk };
     }
   } else {
-    // rim only: the pivot bolt ends in a nut in a pocket in the plateau top (1–2 mm below the surface)
-    const reach = tpl - 1.1;
+    // rim only: the pivot bolt ends just past a nut in a pocket in the plateau top
+    const reach = topC - nutDepth + 0.9;
     const L = stockLength(pb, Lsl + minBody - pb.headH - 0.4 + reach);
     const Hk = L - reach - Lsl + pb.headH + 0.4;
     pivot = { L, floor: Hk - pb.headH - 0.4, H: Hk, D: pivotD, Hk };
   }
-  const lockKb = knobBolt(cb, tl + 1.5 + 1, 2.6, 9);
+  const lockKb = knobBolt(cb, tl + 1.5 + 1);
   const lockKnob = { ...lockKb, D: 26 };
   return {
-    fixing, boltFix, rim, printed, pb, cb, Rp, tpl, tpad, rimH, rimT, wedge, Tb, ttop, yc, ych, rch, Ds, Ws, Xs, Hs, zf, zBot, tl, hLip, zLock, lock,
+    fixing, boltFix, rim, printed, pb, cb, Rp, tpl, tpad, rimH, rimT, wedge, Tb, ttop, yc, ych, rch, Ds, Ws, Xs, Hs, zf, zBot, tl, hLip, zLock, lock, topC, nutDepth,
     topFix, botFix, zs1, rAcc, cable, zEx, dsl, Lsl, e, pivot, lockKnob, spk, notes,
   };
 }
@@ -954,7 +965,8 @@ export function plateauSolid(M: ManifoldToplevel, s: ShelfGeo): Manifold {
   }
   let solid = M.Manifold.union(parts);
   const cuts: Manifold[] = [M.Manifold.cylinder(tpl + 4 * Rp * tanW + 4, (s.printed ? pb.d / 2 + 0.4 : pb.clear / 2 + 0.2), undefined, 40).translate([0, 0, -1])];
-  if (!s.boltFix) cuts.push(tf(hexagon(M, pb.nutAF + 0.3).extrude(pb.nutH + 2 + 10), mul(tilt, translation(0, 0, -(pb.nutH + 2)))));
+  // the nut pocket follows the (vertical) bolt, also under a sloped top
+  if (!s.boltFix) cuts.push(hexagon(M, pb.nutAF + 0.3).extrude(pb.nutH + s.nutDepth + 2 * Rp * tanW + 5).translate([0, 0, s.topC - s.nutDepth - pb.nutH - 0.2]));
   solid = solid.subtract(M.Manifold.union(cuts));
   return solid;
 }
@@ -1060,7 +1072,7 @@ function armBuild(p: Params, ctx: { M: ManifoldToplevel; printer: PrinterProfile
   const R = armRanges(g, num(p, 'tilt'));
   const tilt = clamp(num(p, 'tilt'), R.tiltMin, R.tiltMax);
   const pan = clamp(num(p, 'pan'), R.panMin, R.panMax);
-  if (tilt !== num(p, 'tilt') || pan !== num(p, 'pan')) notes.push(`Het voorbeeld staat op ${pan}° draaien en ${tilt}° kantelen: verder kan de speaker niet zonder de arm of de muur te raken.`);
+  if (tilt !== num(p, 'tilt') || pan !== num(p, 'pan')) warnings.push(`Het voorbeeld staat op ${pan}° draaien en ${tilt}° kantelen: verder kan de speaker niet zonder de arm of de muur te raken.`);
   const placed: Placed[] = [];
   const add = (part: PartOut, print: M4, pose?: M4) => placed.push({ part: { quantity: n, ...part }, print, pose });
   // bracket (side print: U x = print up)
@@ -1184,8 +1196,9 @@ function armBuild(p: Params, ctx: { M: ManifoldToplevel; printer: PrinterProfile
   tips.push('Print in PETG (taaier dan PLA, kruipt minder onder blijvende last): 4 wanden, 40% infill voor beugel, draaistuk en kop; knoppen mogen 25%.');
   if (g.tpad) tips.push('Het kussentje in TPU 95A: het beschermt de speaker en geeft grip, zodat de speaker niet om de bout draait.');
   tips.push(`De klembouten zijn gekochte ${g.cb.label}-bouten met moeren: de koppen klemmen in de knoppen (druk ze erin, een druppel lijm helpt).`);
+  if (g.printed) tips.push('Print de knop met geprinte draad rechtop (draad omhoog) met 0,12 mm lagen en 100% infill; de kleine flanken van de draad lukken zo zonder support. Draai hem eerst een keer in en uit om de draad schoon te maken.');
   if (g.sb.inch) tips.push('1/4"-20 bouten (camerabout) vind je bij fotozaken of online; een kort cameraschroefje met platte kop past ook als de kop in de knop past.');
-  return { parts, scene, info, tips, warnings: [...warnings, ...notes], defaultView: 'assembly' };
+  return { parts, scene, info, tips: [...notes, ...tips], warnings, defaultView: 'assembly' };
 }
 
 function shelfBuild(p: Params, ctx: { M: ManifoldToplevel; printer: PrinterProfile }): BuildOutput {
@@ -1197,15 +1210,14 @@ function shelfBuild(p: Params, ctx: { M: ManifoldToplevel; printer: PrinterProfi
   const n = clamp(Math.round(num(p, 'count')), 1, 4);
   // rotation range: the speaker corners stay in front of the wall
   const { W, D, H, kg } = s.spk;
-  const tanW = Math.tan((s.wedge * Math.PI) / 180);
-  const topC = s.tpl + s.Rp * tanW;
+  const topC = s.topC;
   const corners: Vec2[] = [[-W / 2, -D / 2], [W / 2, -D / 2], [W / 2, D / 2], [-W / 2, D / 2]];
   const clearAt = (a: number) => corners.every(([x, y]) => s.yc + x * Math.sin((a * Math.PI) / 180) + y * Math.cos((a * Math.PI) / 180) >= 2);
   let panMax = 0;
   while (panMax < 180 && clearAt(panMax + 1)) panMax++;
   const panReq = num(p, 'pan');
   const pan = clamp(panReq, -panMax, panMax);
-  if (pan !== panReq) notes.push(`Het voorbeeld staat op ${pan}°: verder raakt de speaker de muur.`);
+  if (pan !== panReq) warnings.push(`Het voorbeeld staat op ${pan}°: verder raakt de speaker de muur.`);
   const placed: Placed[] = [];
   const add = (part: PartOut, print: M4, pose?: M4) => placed.push({ part: { quantity: n, ...part }, print, pose });
   add({ name: 'Plank', solid: shelfSolid(M, p, s), color: C_PART, material: 'petg-hf' }, rotY(-90), identity());
@@ -1220,7 +1232,14 @@ function shelfBuild(p: Params, ctx: { M: ManifoldToplevel; printer: PrinterProfi
     add({ name: 'Kussentje (TPU)', solid: pad, color: C_PAD, material: 'tpu-95a-hf', purpose: 'flexible' }, identity(), onTop);
   }
   const { parts, scene } = finish(placed, []);
-  checkFit(printer, parts, (name) => (name === 'Plank' || name === 'Draaiplateau' ? 'Kies een kleiner draaiplateau (of een kleinere speaker).' : 'Kies kleinere maten.'));
+  const forced = s.rim && 2 * s.Rp > num(p, 'plateD');
+  checkFit(printer, parts, (name) =>
+    name !== 'Plank' && name !== 'Draaiplateau'
+      ? 'Kies kleinere maten.'
+      : forced
+        ? 'De rand om deze speaker maakt het plateau zo groot: kies "Bout in de onderkant" (zonder rand) of een grotere printer.'
+        : 'Kies een kleiner draaiplateau (of een kleinere speaker).',
+  );
   scene.push(wallGhost(-Math.max(150, s.Ws), Math.max(150, s.Ws), s.zBot - 60, topC + s.tpad + H + 60));
   scene.push(speakerGhost([-W / 2, -D / 2, s.tpad], [W / 2, D / 2, s.tpad + H], onTop));
   // ---- load (moment on the wall, top fixings in tension around the bottom edge)
@@ -1282,7 +1301,8 @@ function shelfBuild(p: Params, ctx: { M: ManifoldToplevel; printer: PrinterProfi
   tips.push('Printstand: de plank op zijn zijkant (de steun ligt in de lagen, dus het gewicht trekt ze nooit uit elkaar), het plateau op zijn onderkant, de draaiknop op de bus, de klemknop op zijn platte kant. Alles zonder support.');
   tips.push('Print in PETG: 4 wanden, 30% infill voor de plank en het plateau.');
   if (s.tpad) tips.push('Het kussentje in TPU 95A geeft grip en dempt trillingen.');
-  return { parts, scene, info, tips, warnings: [...warnings, ...notes], defaultView: 'assembly' };
+  if (s.printed) tips.push('Print de draaiknop met geprinte draad rechtop (draad omhoog) met 0,12 mm lagen en 100% infill; de kleine flanken van de draad lukken zo zonder support.');
+  return { parts, scene, info, tips: [...notes, ...tips], warnings, defaultView: 'assembly' };
 }
 
 function build(p: Params, ctx: { M: ManifoldToplevel; printer: PrinterProfile }): BuildOutput {
@@ -1339,7 +1359,7 @@ export const SPEAKER_PARAMS: ParamDef[] = [
   { type: 'bool', key: 'pad', label: 'Zacht kussentje (TPU)', default: true, help: 'Beschermt de speaker en geeft grip.' },
   { type: 'group', label: 'Draaien & kantelen' },
   {
-    type: 'select', key: 'clampBolt', label: 'Klembouten', default: 'M6', show: (p) => isArm(p) || bool(p, 'lock'),
+    type: 'select', key: 'clampBolt', label: 'Klembouten', default: 'M6', show: (p) => isArm(p) || bool(p, 'lock') || str(p, 'shelfFix') === 'rim',
     options: [
       { value: 'M6', label: 'M6 (sterkst)' },
       { value: 'M5', label: 'M5' },
