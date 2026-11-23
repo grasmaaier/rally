@@ -345,6 +345,10 @@ describe('icons and controls', () => {
   it('shows colours as swatches and shapes as tiles', () => {
     const sel = (key: string) => defs.find((d): d is Extract<ParamDef, { type: 'select' }> => d.type === 'select' && d.key === key)!;
     expect(selectKind(sel('s1Color'))).toBe('swatch');
+    // colours with an "automatic" choice first
+    expect(selectKind(sel('capColor'))).toBe('swatch');
+    expect(selectKind(sel('cupColor'))).toBe('swatch');
+    expect(selectKind(sel('kl2Color'))).toBe('swatch');
     expect(selectKind(sel('s1Shape'))).toBe('shape');
     expect(selectKind(sel('s1Kap'))).toBe('kap');
     expect(selectKind(sel('lampType'))).toBe('text');
@@ -366,6 +370,10 @@ describe('click-to-select mapping', () => {
       ['pasproef', lamp({ fitTest: true })],
       ['M10', lamp({ connection: 'm10', lampType: 'pendant' })],
       ['dichte tafellamp', lamp({ count: 2, s1Shape: 'kap', s1Kap: 'koepel', s1D: 220, s1H: 110, closed: true, socket: 'e14', bulb14: 'g45' })],
+      ['dichte tafellamp met opening', lamp({ count: 2, s1Shape: 'kap', s1Kap: 'koepel', s1D: 220, s1H: 110, closed: true, closedShape: 'binnen', socket: 'e14', bulb14: 'g45' })],
+      ['dichte hanglamp, gaatjes, M10', lamp({ connection: 'm10', lampType: 'pendant', count: 2, s1Shape: 'cilinder', s1D: 50, s1H: 30, s2Shape: 'kap', s2Kap: 'koepel', s2D: 220, s2H: 110, closed: true, vent: 'gaatjes' })],
+      ['geribbelde koker in lagen (tafel)', lamp({ count: 2, s1Shape: 'kap', s1Kap: 'geribbeld', s1D: 180, s1H: 120, s1Scallop: 15, s2Shape: 'hals', s2D: 26, layers: '2', kl2Mat: 'mat', socket: 'e14', bulb14: 'g45' })],
+      ['hoge ribbelring', lamp({ lampType: 'pendant', count: 2, s1Shape: 'ribring', s1D: 140, s1H: 60, s1Mat: 'mat', s2Shape: 'schijf', capColor: '#c8352e', cupColor: '#2f5aa8' })],
       ...lampTool.presets!.map((p) => [p.name, lamp(p.values)] as [string, Params]),
     ];
     for (const [name, p] of designs) {

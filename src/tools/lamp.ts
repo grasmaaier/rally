@@ -8,7 +8,7 @@ import {
   BORE_R, BULBS, COLOR_OPTIONS, CORE_R, COUNTED, KAP_OPTIONS, MAT_OPTIONS, POST_HOLE, RECESS, RECESS_HUB, SHAPE_OPTIONS, SOCKETS, SPACERS, SPIGOT, TEXTURE_OPTIONS,
   bulbGlass, bulbOptions, isFluted, kapRadius, patternFor, ringFactor, shapeRadius, type Bulb, type SegSpec, type Socket,
 } from './lampParts';
-import { fluteDepthFrac, fluteOf, sleeveInnerMin, sleeveSolid, type Flute, type SleeveSpec } from './lampFlute';
+import { fluteDepthFrac, fluteOf, flutedShellFits, flutedShellSolid, sleeveInnerMin, sleeveSolid, type Flute, type SleeveSpec } from './lampFlute';
 import { HOLEABLE, LAYER_CEIL, LAYER_PATTERNS, RELIEF as RELIEF_PATS, THICK as THICK_PATS, isShaded, layerBudget, layerField, layerHoles, layerParams, layersOf, patternLabel, type Hole as LayerHole, type LayerSetup, type LayerSpec } from './lampLayers';
 import { gridEnvelope, gridSolid, shadeGrid, type ShadeGrid } from '../geom/shade';
 import { ringsOf, wallSolid, type Ring } from '../geom/thread';
@@ -927,6 +927,9 @@ function bulbMesh(glass: { r: (t: number) => number; length: number }, mouth: nu
   return { positions: new Float32Array(pos), indices: new Uint32Array(idx) };
 }
 
+/** Envelope of a shell: a hollow fluted ring is a plain cylinder with round rims (its flutes are made by `flutedShellSolid`). */
+const shellSpec = (pc: Piece): SegSpec => (pc.flute ? { ...pc.spec!, shape: 'cilinder', v: 0, tex: 'glad' } : pc.spec!);
+
 /** A hollow segment needs room for a disc hub at both ends. */
 const SHELL_MIN_H = 2 * (DISC.nut - DISC.t) + 8;
 
@@ -950,7 +953,7 @@ const postRadius = (s: SegSpec) => lerp(4, 10, s.v) / 2;
 function insertDiscs(all: Piece[], c: Ctx, extra: number, notes: string[]) {
   const s = c.tube!;
   const wall = c.shellWall;
-  for (const pc of all) if (pc.role === 'shell') pc.shell = shellProfile(pc.spec!, c.texDepth, wall, { inMin: s.shellIn, hubs: [] });
+  for (const pc of all) if (pc.role === 'shell') pc.shell = shellProfile(shellSpec(pc), c.texDepth, wall, { inMin: s.shellIn, hubs: [] });
   const isShell = (q: Piece | null) => !!q && q.role === 'shell';
   const rim = (q: Piece, f: 0 | 1) => q.shell!.rims[f];
   const tubeIdx = all.map((q, i) => (q.chain ? -1 : i)).filter((i) => i >= 0);
@@ -1018,7 +1021,7 @@ function insertDiscs(all: Piece[], c: Ctx, extra: number, notes: string[]) {
   // shells with room for the hubs
   for (const pc of all) {
     if (pc.role !== 'shell') continue;
-    pc.shell = shellProfile(pc.spec!, c.texDepth, wall, { inMin: s.shellIn, hubs: pc.hubs ?? [] });
+    pc.shell = shellProfile(shellSpec(pc), c.texDepth, wall, { inMin: s.shellIn, hubs: pc.hubs ?? [] });
     const grown = pc.shell.grown;
     for (const f of [0, 1] as const) {
       if (grown[f] > 1) notes.push(`${pc.name}: opening ${(f === 0) === c.pendant ? 'onder' : 'boven'} Ø${(2 * pc.shell.rims[f].ro).toFixed(0)} mm (ruimte voor de buis${pc.hubs?.some((h) => h.face === f) ? ' en de moer van de schijf' : ''}).`);
@@ -1081,7 +1084,8 @@ function ceilingVentPlan(kap: Piece, c: Ctx, cover: number): CeilingVents {
   const rHole = c.bore + 1.2 + h.hole;
   const cupR = c.click ? c.click.Rc : c.socket.d / 2;
   const rTrench = Math.max(rHole + 1, Math.min(iCav - 0.3, cupR + 6));
-  const rExit = cover >= rHole + h.hole + 0.5 ? (cover + 2 >= faceR - 1 ? faceR + 1 : cover + 2) : null;
+  // a groove whenever the neighbour covers the holes (even in part); holes only open to the top next to a thin neck
+  const rExit = cover > rHole - h.hole - 0.5 ? (Math.max(cover + 2, rHole + h.hole + 1) >= faceR - 1 ? faceR + 1 : Math.max(cover + 2, rHole + h.hole + 1)) : null;
   // stay clear of post holes in the ceiling face (print coordinates: a flipped kap is mirrored in y)
   const posts = kap.holes.filter((q) => q.face === (pend ? 1 : 0)).map((q) => ({ x: q.x, y: kap.flipped ? -q.y : q.y, r: q.r }));
   const reach = Math.max(rTrench, rExit ?? rHole + h.hole);
@@ -1093,14 +1097,20 @@ function ceilingVentPlan(kap: Piece, c: Ctx, cover: number): CeilingVents {
     }
     return m;
   };
-  let best = { phase: 0, score: -Infinity };
-  for (let k = 0; k < 24; k++) {
-    const phase = (k / 24) * (TAU / h.n);
-    let score = Infinity;
-    for (let j = 0; j < h.n; j++) score = Math.min(score, room(phase + (j * TAU) / h.n));
-    if (score > best.score) best = { phase, score };
+  // the regular pattern (10, or 12 / 8 between posts) and turn that keep the most vents clear of the posts
+  let angles: number[] = [];
+  for (const n of [h.n, 12, 8]) {
+    let best = { phase: 0, score: -Infinity };
+    for (let k = 0; k < 24; k++) {
+      const phase = (k / 24) * (TAU / n);
+      let score = Infinity;
+      for (let j = 0; j < n; j++) score = Math.min(score, room(phase + (j * TAU) / n));
+      if (score > best.score) best = { phase, score };
+    }
+    const keep = Array.from({ length: n }, (_, j) => best.phase + (j * TAU) / n).filter((th) => room(th) > 0);
+    if (keep.length > angles.length) angles = keep;
+    if (angles.length >= h.n) break;
   }
-  const angles = Array.from({ length: h.n }, (_, j) => best.phase + (j * TAU) / h.n).filter((th) => room(th) > 0);
   return { angles, rHole, rTrench, rExit, ceil: kap.ceil };
 }
 
@@ -1298,6 +1308,17 @@ function build(p: Params, ctx: Parameters<ToolDef['build']>[1]): BuildOutput {
     let solidFlat = false;
     for (const pc of all) {
       if (pc.role !== 'seg' || !pc.spec || pc.chain) continue;
+      if (pc.spec.shape === 'ribring') {
+        // a tall fluted ring becomes hollow: one fluted wall, round rims for the discs
+        const sp = pc.spec;
+        const f = fluteOf(sp.D / 2, sp.v, sp.n, sp.groove ?? 0.45, sp.round ?? 0.8);
+        if (pc.h >= SHELL_MIN_H && flutedShellFits(f, pc.h, c.shellWall, Math.max(tube.shellIn, tube.hubR + 0.6))) {
+          pc.role = 'shell';
+          pc.flute = f;
+          pc.pattern = ROUND;
+        } else solidFlat = true;
+        continue;
+      }
       if (!SHELL_SHAPES.has(pc.spec.shape)) {
         solidFlat = true;
         continue;
@@ -1309,7 +1330,7 @@ function build(p: Params, ctx: Parameters<ToolDef['build']>[1]): BuildOutput {
       pc.role = 'shell';
       pc.pattern = ROUND;
     }
-    if (solidFlat) tips.push('Bloem-, tandwiel- en platte schijven en de hals blijven massief (ze zijn dun) en schuiven met een gewoon gat over de schroefbuis.');
+    if (solidFlat) tips.push('Bloem-, tandwiel- en platte schijven, platte ribbelringen en de hals blijven massief (ze zijn dun) en schuiven met een gewoon gat over de schroefbuis.');
   }
   const kapPiece = all.find((pc) => pc.role === 'kap');
   if (kapPiece) {
@@ -1715,7 +1736,7 @@ function build(p: Params, ctx: Parameters<ToolDef['build']>[1]): BuildOutput {
       const maxO = Math.max(...sh.o);
       checkFit(pc.name, 2 * maxO, sh.H);
       if (sh.shrunk < 0.97) notes.push(`${pc.name}: zonder support kan de wand niet vlakker dan 45° lopen (in beide richtingen, voor een holle schaal), dus is hij Ø${(2 * maxO).toFixed(0)} mm geworden (i.p.v. Ø${pc.spec!.D.toFixed(0)}). Maak hem hoger voor de volle maat.`);
-      const solid = gridSolid(M, shellGrid(sh, pc.flipped, need));
+      const solid = pc.flute ? flutedShellSolid(M, pc.flute, c.shellWall, sh.H) : gridSolid(M, shellGrid(sh, pc.flipped, need));
       const idx = parts.length;
       parts.push({ name: `${pc.name} (hol)`, solid, color: pc.color, ...materialOf(pc), select: selectOf(pc), ...(c.shellVase ? { estimate: 'vase' as const } : {}) });
       scene.push({ kind: 'part', part: idx, matrix: placeMatrix(pc) });

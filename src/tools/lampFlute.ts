@@ -178,7 +178,7 @@ export function sleeveSolid(M: ManifoldToplevel, s: SleeveSpec): Manifold {
   const ch = Math.min(0.6, ceil / 3);
   const plate = M.Manifold.union([
     M.Manifold.cylinder(ch, f.R - ch, f.R, segs),
-    M.Manifold.cylinder(ceil - ch + 0.01, f.R, f.R, segs).translate([0, 0, ch - 0.005]),
+    M.Manifold.cylinder(ceil - ch + 0.005, f.R, f.R, segs).translate([0, 0, ch - 0.005]),
   ]).subtract(M.Manifold.cylinder(ceil + 2, s.bore, s.bore, 64).translate([0, 0, -1]));
   const wall = flutedBand(M, f, s.wall).extrude(s.top - ceil + 0.02).translate([0, 0, ceil - 0.02]);
   let solid = M.Manifold.union([plate, wall]);
@@ -235,4 +235,39 @@ function scallopCutter(M: ManifoldToplevel, f: Flute, wall: number, top: number,
     quad(a, b, b + 1, a + 1); // underside (the wavy edge)
   }
   return fromArrays(M, pos, idx);
+}
+
+/** Length at each end of a hollow fluted segment where the grooves fill up to a round rim (45°). */
+export const fluteFade = (f: Flute) => f.depth + 0.5;
+
+/** Can a fluted ring of this height be hollow (fluted wall between two round rims, room for the tube inside)? */
+export const flutedShellFits = (f: Flute, H: number, wall: number, needIn: number) => H >= 2 * fluteFade(f) + 4 && f.R - f.depth - wall >= needIn + 0.5;
+
+/**
+ * Hollow fluted ring for the printed tube, standing on one rim (print
+ * orientation, z ∈ [0, H]): the fluted wall (inner side = the outline offset
+ * by the wall) with the grooves filled by 45° cones toward both rims, so each
+ * rim is a round ring that a disc centres in its groove. Every surface leans
+ * at most 45° (vase mode: one wall line).
+ */
+export function flutedShellSolid(M: ManifoldToplevel, f: Flute, wall: number, H: number): Manifold {
+  const segs = Math.round(clamp((TAU * f.R) / 1.2, 96, 720) / 8) * 8;
+  const cs = M.CrossSection.ofPolygons([fluteOutline(f)]);
+  const inner = cs.offset(-wall, 'Round', 2, 64).simplify(0.002);
+  const fade = fluteFade(f);
+  const lo = f.R - fade;
+  const s2 = wall * Math.SQRT2;
+  const outer = M.Manifold.union([
+    cs.extrude(H),
+    // the grooves fill toward the rims: cones from the full radius at the rim inward at 45°
+    M.Manifold.cylinder(fade, f.R, lo, segs),
+    M.Manifold.cylinder(fade, lo, f.R, segs).translate([0, 0, H - fade]),
+  ]);
+  const cavity = M.Manifold.union([
+    inner.extrude(H + 2).translate([0, 0, -1]),
+    // the same cones a wall (square to the 45° face) further in, past the rims
+    M.Manifold.cylinder(fade + 1, f.R - s2 + 1, lo - s2, segs).translate([0, 0, -1]),
+    M.Manifold.cylinder(fade + 1, lo - s2, f.R - s2 + 1, segs).translate([0, 0, H - fade]),
+  ]);
+  return outer.subtract(cavity);
 }

@@ -237,8 +237,8 @@ export function inwardSamples(wallR: (d: number) => number, s: Seam, setup: Clos
   const drop = Math.max(setup.drop, collar);
   // the wall before the bend: the band keeps the full rim radius, and nowhere does the wall lean more than
   // 45° (a 1-Lipschitz envelope), so the bend's 45° cone stays clear of it and the band is never cut back
-  const dd = 0.25;
-  const m = Math.ceil((drop + R + 20) / dd);
+  const m = Math.max(1, Math.ceil(drop / 0.25));
+  const dd = drop / m;
   const ws = Array.from({ length: m + 1 }, (_, j) => {
     const d = j * dd;
     return d <= collar ? R : Math.max(Math.min(wallR(d), R), R - (d - collar));
@@ -269,8 +269,9 @@ export function inwardSamples(wallR: (d: number) => number, s: Seam, setup: Clos
   for (let j = 0; j <= n; j++) {
     const z = (H * j) / n;
     const d = H - z;
+    // past the straight part the wall would go on straight down: the 45° cone cuts it off (rounded by k)
     const cone = rLip + smax0(z - LIP.h, k);
-    let o = d <= collar ? R : smin(w(d), cone, k);
+    let o = d <= collar ? R : smin(d <= drop ? w(d) : Rt, cone, k);
     o -= Math.max(0, 0.6 - z);
     const band = d <= s.depth + 0.01;
     const lip = z <= LIP.h;
