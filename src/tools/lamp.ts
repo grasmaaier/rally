@@ -5,9 +5,10 @@ import { fitsOn, usable } from '../core/printer';
 import { TAU, clamp, lerp, mul, rotX, rotZ, smoothstep, translation, type M4 } from '../geom/helpers';
 import { ROUND, latheInnerSegs, latheSolid, latheVolume, mirrorSamples, printable, sampleAt, sampleRange, simplifySamples, type LathePattern, type LatheSample } from '../geom/lathe';
 import {
-  BORE_R, BULBS, COLOR_OPTIONS, CORE_R, COUNTED, KAP_OPTIONS, POST_HOLE, RECESS, RECESS_HUB, SHAPE_OPTIONS, SOCKETS, SPACERS, SPIGOT, TEXTURE_OPTIONS,
-  bulbGlass, bulbOptions, kapRadius, patternFor, ringFactor, shapeRadius, type Bulb, type SegSpec, type Socket,
+  BORE_R, BULBS, COLOR_OPTIONS, CORE_R, COUNTED, KAP_OPTIONS, MAT_OPTIONS, POST_HOLE, RECESS, RECESS_HUB, SHAPE_OPTIONS, SOCKETS, SPACERS, SPIGOT, TEXTURE_OPTIONS,
+  bulbGlass, bulbOptions, isFluted, kapRadius, patternFor, ringFactor, shapeRadius, type Bulb, type SegSpec, type Socket,
 } from './lampParts';
+import { fluteDepthFrac, fluteOf, sleeveInnerMin, sleeveSolid, type Flute, type SleeveSpec } from './lampFlute';
 import { HOLEABLE, LAYER_CEIL, LAYER_PATTERNS, RELIEF as RELIEF_PATS, THICK as THICK_PATS, isShaded, layerBudget, layerField, layerHoles, layerParams, layersOf, patternLabel, type Hole as LayerHole, type LayerSetup, type LayerSpec } from './lampLayers';
 import { gridEnvelope, gridSolid, shadeGrid, type ShadeGrid } from '../geom/shade';
 import { ringsOf, wallSolid, type Ring } from '../geom/thread';
@@ -17,7 +18,8 @@ import {
 } from './lampTube';
 import { SHELL_SHAPES, shellGrid, shellProfile, shellSamples as shellEnvelope, solidVolume, type ShellHub, type ShellProfile } from './lampShell';
 import {
-  SEAM_THREAD, bandRings, closedOf, closedParams, floorVents, neckSolid, partnerRadius, partnerSamples, seamOf, ventCutters, type ClosedSetup, type Seam,
+  HIDDEN, SEAM_THREAD, bandRings, ceilingVentArea, ceilingVentCutters, closedOf, closedParams, floorVents, inwardSamples, neckSolid, partnerRadius, partnerSamples, seamOf, seamVentArea,
+  seamVentCutters, ventCutters, type CeilingVents, type ClosedSetup, type Inward, type Seam,
 } from './lampClosed';
 
 export const MAX_SEGMENTS = 8;
@@ -101,7 +103,13 @@ interface Piece {
   rot?: number;
   /** Closed lamp: seam thread on the rim of the kap (neck) or of the second shade (band). */
   seam?: Seam;
-  vents?: boolean;
+  /** Second shade that curves inward to an opening. */
+  inward?: Inward;
+  /** Fluted kap (ribbed glass sleeve): flutes and the solid to build. */
+  flute?: Flute;
+  sleeve?: SleeveSpec;
+  /** Disc: filament of the neighbour whose colour it takes. */
+  material?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -128,6 +136,7 @@ function slotParams(i: number): ParamDef[] {
   const d = DEFAULT_SLOTS[i - 1];
   const on = (p: Params) => isOn(p, i);
   const sh = (p: Params) => shapeOf(p, i);
+  const fluted = (p: Params) => on(p) && isFluted({ shape: sh(p), kap: str(p, k('Kap')) });
   return [
     { type: 'group', label: `Segment ${i}${i === 1 ? ' (bovenste)' : ''}`, show: on },
     { type: 'select', key: k('Shape'), label: 'Vorm', options: SHAPE_OPTIONS, default: d.shape ?? 'cilinder', show: on },
@@ -143,21 +152,38 @@ function slotParams(i: number): ParamDef[] {
     {
       type: 'number', key: k('Var'), label: 'Vormvariant', min: 0, max: 100, step: 1, unit: '%', default: Math.round((d.v ?? 0.3) * 100),
       show: (p) => on(p) && sh(p) !== 'hals',
-      help: 'Bol: grootte van de platte kanten · kussen: hoe bol de rand is · cilinder/schijf: afronding · tol/diabolo: diameter van punten/taille · kegel/trap/kap: diameter boven · koepel: platte top · boog: hoogte van de boog · bloem/tandwiel: diepte van blaadjes/tanden · stijlen: dikte · lamel: breedte van de ring.',
+      help: 'Bol: grootte van de platte kanten · kussen: hoe bol de rand is · cilinder/schijf: afronding · tol/diabolo: diameter van punten/taille · kegel/trap/kap: diameter boven · koepel: platte top · boog: hoogte van de boog · bloem/tandwiel: diepte van blaadjes/tanden · ribbelring/geribbelde koker: diepte van de groeven (tot 20% van de straal) · stijlen: dikte · lamel: breedte van de ring.',
     },
     {
       type: 'number', key: k('N'), label: 'Aantal', min: 1, max: 48, step: 1, default: d.n ?? 3,
-      show: (p) => on(p) && (COUNTED.has(sh(p)) || (sh(p) === 'kap' && str(p, k('Kap')) === 'trap')),
-      help: 'Pieken (tol), taillies (diabolo), treden (trap), blaadjes (bloem), tanden (tandwiel) of stijlen.',
+      show: (p) => on(p) && (COUNTED.has(sh(p)) || (sh(p) === 'kap' && (str(p, k('Kap')) === 'trap' || str(p, k('Kap')) === 'geribbeld'))),
+      help: 'Pieken (tol), taillies (diabolo), treden (trap), blaadjes (bloem), tanden (tandwiel), ribben (geribbeld) of stijlen.',
     },
-    { type: 'bool', key: k('Flip'), label: 'Ondersteboven', default: false, show: (p) => on(p) && !SPACERS.has(sh(p)) && sh(p) !== 'kap' && sh(p) !== 'lamel' },
-    { type: 'select', key: k('Tex'), label: 'Textuur', options: TEXTURE_OPTIONS, default: 'glad', show: (p) => on(p) && sh(p) !== 'stijlen' },
+    { type: 'bool', key: k('Flip'), label: 'Ondersteboven', default: false, show: (p) => on(p) && !SPACERS.has(sh(p)) && sh(p) !== 'kap' && sh(p) !== 'lamel' && sh(p) !== 'ribring' },
+    { type: 'select', key: k('Tex'), label: 'Textuur', options: TEXTURE_OPTIONS, default: 'glad', show: (p) => on(p) && sh(p) !== 'stijlen' && !fluted(p) },
     {
       type: 'number', key: k('TexN'), label: 'Aantal vouwen / ringen', min: 2, max: 180, step: 1, default: 96,
-      show: (p) => on(p) && sh(p) !== 'stijlen' && str(p, k('Tex')) !== 'glad',
+      show: (p) => on(p) && sh(p) !== 'stijlen' && !fluted(p) && str(p, k('Tex')) !== 'glad',
       help: 'Plissé en ribbels: 8–180 rondom. Ringen: aantal over de hoogte.',
     },
+    {
+      type: 'number', key: k('Groove'), label: 'Groefbreedte', min: 20, max: 80, step: 1, unit: '%', default: 45, show: fluted,
+      help: 'Breedte van een groef t.o.v. één rib plus groef. Smal: brede glazen staven met smalle groeven.',
+    },
+    {
+      type: 'number', key: k('Round'), label: 'Afronding ribben', min: 0, max: 100, step: 1, unit: '%', default: 80, show: fluted,
+      help: '0%: scherpe randen · 100%: ronde ribben zoals glazen staafjes. De groeven zijn altijd U-vormig.',
+    },
+    {
+      type: 'number', key: k('Scallop'), label: 'Gekartelde rand', min: 0, max: 80, step: 1, unit: 'mm', default: 0,
+      show: (p) => on(p) && sh(p) === 'kap' && str(p, k('Kap')) === 'geribbeld',
+      help: 'Elke tweede rib loopt zoveel verder door, met een rond eind (0 = rechte rand). Bij het printen ligt de rand boven: geen support nodig.',
+    },
     { type: 'select', key: k('Color'), label: 'Kleur', options: COLOR_OPTIONS, default: d.color ?? '#f2efe8', show: on },
+    {
+      type: 'select', key: k('Mat'), label: 'Materiaal', options: MAT_OPTIONS, default: 'auto', show: on,
+      help: 'Automatisch: kappen, lamellen en ribbelringen doorschijnend (PETG translucent), de rest in het filament dat je kiest. Doorschijnend: gloeit mee. Dekkend: mat gekleurd (PLA Matte; bij de lamp PETG).',
+    },
   ];
 }
 
@@ -202,12 +228,21 @@ const params: ParamDef[] = [
   },
   { type: 'bool', key: 'cover', label: 'Fittingkraag', default: true, show: (p) => !isPrinted(p), help: 'Een geprint kokertje rond de fitting (niet nodig in een kap).' },
   ...fitParams,
+  {
+    type: 'select', key: 'cupColor', label: 'Kleur dop (fitting)', options: [{ value: 'auto', label: 'Automatisch' }, ...COLOR_OPTIONS], default: 'auto', show: isPrinted,
+    help: 'De dop met de klik aan het eind van de buis. Automatisch: zonder kap (blote lamp) de kleur van het deel erboven, anders die van de buis. Een eigen kleur print je in PETG.',
+  },
   { type: 'group', label: 'Afwerking' },
   { type: 'number', key: 'texDepth', label: 'Diepte textuur', min: 0.4, max: 4, step: 0.1, unit: 'mm', default: 1.4 },
   { type: 'number', key: 'shadeWall', label: 'Wand van kappen', min: 0.8, max: 3, step: 0.1, unit: 'mm', default: 1.2, help: '1–2 wandlussen wit PETG/PLA laten het licht mooi door.' },
   ...shellParams,
   { type: 'group', label: 'Hanglamp', show: pendant },
   { type: 'bool', key: 'cableCap', label: 'Kapje over moer en trekontlasting', default: true, show: (p) => pendant(p) && !isPrinted(p) },
+  {
+    type: 'select', key: 'capColor', label: 'Kleur topkapje', options: [{ value: 'auto', label: 'Automatisch' }, ...COLOR_OPTIONS], default: 'auto',
+    show: (p) => pendant(p) && (isPrinted(p) || bool(p, 'cableCap')),
+    help: 'Het kapje boven op de lamp (trekontlasting van het snoer). Automatisch: de kleur van het bovenste deel. Een eigen kleur wordt mat, zoals een gekleurd cilindertje aan het snoer.',
+  },
   { type: 'bool', key: 'canopy', label: 'Plafondkap', default: true, show: pendant },
   { type: 'number', key: 'canopyD', label: 'Diameter plafondkap', min: 80, max: 160, step: 1, unit: 'mm', default: 110, show: (p) => pendant(p) && bool(p, 'canopy') },
   { type: 'number', key: 'canopyH', label: 'Hoogte plafondkap', min: 20, max: 50, step: 1, unit: 'mm', default: 28, show: (p) => pendant(p) && bool(p, 'canopy') },
@@ -246,9 +281,13 @@ function specOf(p: Params, i: number): SegSpec {
     v: clamp(num(p, k('Var')) / 100, 0, 1),
     n: clamp(Math.round(num(p, k('N'))), 1, 48),
     flip: bool(p, k('Flip')),
-    tex: str(p, k('Tex')),
+    tex: isFluted({ shape: str(p, k('Shape')), kap: str(p, k('Kap')) }) ? 'glad' : str(p, k('Tex')),
     texN: clamp(Math.round(num(p, k('TexN'))), 2, 180),
     color: str(p, k('Color')),
+    mat: MAT_OPTIONS.some((o) => o.value === p[k('Mat')]) ? str(p, k('Mat')) : 'auto',
+    groove: clamp(Number.isFinite(num(p, k('Groove'))) ? num(p, k('Groove')) / 100 : 0.45, 0, 1),
+    round: clamp(Number.isFinite(num(p, k('Round'))) ? num(p, k('Round')) / 100 : 0.8, 0, 1),
+    scallop: clamp(Number.isFinite(num(p, k('Scallop'))) ? num(p, k('Scallop')) : 0, 0, 200),
   };
 }
 
@@ -257,7 +296,7 @@ const shapeLabel = (s: SegSpec) =>
 
 const SHORT: Record<string, string> = {
   bol: 'Bol', kussen: 'Kussen', cilinder: 'Cilinder', tol: 'Tol', diabolo: 'Diabolo', kegel: 'Kegel', koepel: 'Koepel', boog: 'Boog', trap: 'Ziggurat',
-  bloem: 'Bloemschijf', tandwiel: 'Tandwiel', schijf: 'Schijf', hals: 'Hals', stijlen: 'Stijlen', kap: 'Kap', lamel: 'Lamel',
+  bloem: 'Bloemschijf', tandwiel: 'Tandwiel', schijf: 'Schijf', hals: 'Hals', stijlen: 'Stijlen', kap: 'Kap', lamel: 'Lamel', ribring: 'Ribbelring',
 };
 const shortName = (s: SegSpec) => SHORT[s.shape] ?? s.shape;
 
@@ -297,6 +336,20 @@ function selectOf(pc: Piece): string {
   }
 }
 
+/**
+ * Filament suggestion of a piece: shades near the bulb are translucent PETG
+ * (opaque PETG when "dekkend"), fluted rings translucent, opaque decorative
+ * parts matte PLA. Without a choice the user's own filament is used.
+ */
+function materialOf(pc: Piece): { material?: string; purpose?: 'lamp' } {
+  if (pc.role === 'disc' || pc.role === 'base' || pc.role === 'cover' || pc.role === 'cap') return pc.material ? { material: pc.material } : {};
+  const m = pc.role === 'laag' ? (pc.layer?.mat ?? 'helder') : (pc.spec?.mat ?? 'auto');
+  if (pc.role === 'kap' || pc.role === 'laag' || pc.role === 'lamel' || pc.role === 'kap2') return { material: m === 'mat' ? 'petg-hf' : 'petg-translucent', purpose: 'lamp' };
+  if (m === 'helder' || (m === 'auto' && pc.spec?.shape === 'ribring')) return { material: 'petg-translucent' };
+  if (m === 'mat') return { material: 'pla-matte' };
+  return {};
+}
+
 // ---------------------------------------------------------------------------
 // Body profiles (stack coordinates, z = 0 at the bottom of the body)
 
@@ -328,14 +381,42 @@ const layerWall = (s: LayerSpec, c: Ctx) => {
 
 /** Smallest radius of a kap: room for the socket (and for every layer and gap; walls may lean 45°). */
 function kapTopR(pc: Piece, c: Ctx) {
-  // the socket (M10) or the click cup at the end of the printed tube hangs under the ceiling
-  const room = c.click ? c.click.Rc + 1.5 : c.socket.d / 2 + 0.6;
+  // the socket (M10) or the click cup at the end of the printed tube hangs under the ceiling;
+  // hidden vents: a wider gap around it, so the warm air reaches the channels in the ceiling
+  const vent = c.closed?.vent === 'verborgen' ? HIDDEN.room : 0;
+  const room = (c.click ? c.click.Rc + 1.5 : c.socket.d / 2 + 0.6) + vent;
   const tex = pc.pattern.min < 1 ? c.texDepth : 0;
-  const topR = c.click ? room + c.shadeWall + tex + 0.5 : c.socket.d / 2 + 2 * c.shadeWall + 3;
+  const topR = c.click ? room + c.shadeWall + tex + 0.5 : c.socket.d / 2 + 2 * c.shadeWall + 3 + vent;
+  const spec = pc.spec;
+  if (spec && spec.shape === 'kap' && spec.kap === 'geribbeld') {
+    // fluted sleeve: the bottoms of its grooves (minus the wall) clear the socket and the inner layers
+    const inner = c.layered ? c.layers.specs.slice(1) : [];
+    const walls = inner.reduce((a, q) => a + (isShaded(q) ? layerWall(q, c) : c.shadeWall + c.texDepth), 0);
+    const need = inner.length ? (c.click ? room : c.socket.d / 2 + 4) + 1.42 * (walls + inner.length * c.layers.gap) : room + 0.5;
+    return (need + c.shadeWall + 0.3) / (1 - fluteDepthFrac(spec.v));
+  }
   if (!pc.layer) return topR;
   const L = c.layered ? c.layers.specs : [pc.layer];
   const walls = L.reduce((a, q) => a + (isShaded(q) ? layerWall(q, c) : c.shadeWall + c.texDepth), 0);
   return Math.max(topR, (c.click ? room : c.socket.d / 2 + 4) + 1.42 * (walls + (L.length - 1) * c.layers.gap));
+}
+
+/**
+ * Fluted kap (ribbed glass sleeve) in stack coordinates: a round envelope at
+ * the rib tops with the inner radius at the bottom of the grooves, a solid
+ * ceiling plate (the real fluted solid is made by `sleeveSolid`).
+ */
+function flutedSamples(pc: Piece, c: Ctx): LatheSample[] {
+  const f = pc.flute!;
+  const h = pc.h;
+  const open = h - pc.ceil;
+  const inner = sleeveInnerMin(f, c.shadeWall);
+  const out: LatheSample[] = [
+    { z: 0, o: f.R, i: inner, tex: 0, wall: c.shadeWall, follow: true },
+    { z: open, o: f.R, i: inner, tex: 0, wall: c.shadeWall, follow: true },
+    ...sampleRange(Math.min(h, open + 0.01), h, DZ, (z) => ({ o: f.R, i: pc.recessTop && z > h - RECESS.depth ? Math.max(c.bore, RECESS.r0 - (h - z)) : c.bore, tex: 0, wall: SOLID_WALL })),
+  ];
+  return c.pendant ? out : mirrorSamples(out);
 }
 
 /**
@@ -387,6 +468,7 @@ function bodySamples(pc: Piece, c: Ctx): LatheSample[] {
       const raw = kapRadius(spec, topR);
       const ring = pc.layer && isShaded(pc.layer) ? () => 1 : ringFactor(spec, c.texDepth, spec.D / 2);
       const tex = pc.pattern.min < 1 ? 1 : 0;
+      if (pc.flute) return flutedSamples(pc, c);
       if (pc.layer) return shellSamples(pc, c, (z) => raw(z) * ring(z), tex);
       const flange = POST_HOLE + 4;
       const seam = pc.seam;
@@ -514,6 +596,11 @@ function finish(pc: Piece, c: Ctx) {
   pc.final = printable(toPrint(s, pc.flipped, pc.zmin), pc.pattern, pc.minInner);
   const raw = Math.max(...s.map((q) => q.o));
   pc.shrunk = Math.max(...pc.final.map((q) => q.o)) / raw;
+  if (pc.flute) {
+    // ceiling plate on the bed, the fluted wall up to the rim (the long ribs of a scalloped rim included)
+    const top = pc.final[pc.final.length - 1].z;
+    pc.sleeve = { f: pc.flute, wall: c.shadeWall, ceil: pc.ceil, bore: c.bore, top, scallop: Math.min(pc.spec!.scallop ?? 0, top - pc.ceil - 10) };
+  }
 }
 
 /** How much material printing in an orientation would add or remove (mm³). */
@@ -662,7 +749,7 @@ function buildLayers(kap: Piece, c: Ctx, hasChain: boolean, notes: string[]): Pi
 
 /** Solid of a turned part: patterned shade or lathe, plus the centring cone and the openings of a layer. */
 function shellSolid(M: ManifoldToplevel, pc: Piece): Manifold {
-  let solid = pc.grid ? gridSolid(M, pc.grid) : latheSolid(M, pc.final, pc.pattern);
+  let solid = pc.sleeve ? sleeveSolid(M, pc.sleeve) : pc.grid ? gridSolid(M, pc.grid) : latheSolid(M, pc.final, pc.pattern);
   if (pc.spigotIn) {
     // on the cavity side of the ceiling (print coordinates: ceiling on the bed)
     const k = (SPIGOT.r0 - SPIGOT.r1) / SPIGOT.h;
@@ -809,6 +896,37 @@ function ringOutline(name: string, zA: number, zB: number, rIn: number, rOut: nu
   for (let r = rIn; r <= rOut + 1e-9; r += 1) pts.push([r, zA], [r, zB]);
   return { name, pts, s, z0: zA };
 }
+/** The bulb's glass as a see-through mesh (scene only): a neck from the socket mouth widening into the globe. */
+function bulbMesh(glass: { r: (t: number) => number; length: number }, mouth: number, dir: 1 | -1, segs = 48) {
+  const n = Math.max(8, Math.ceil(glass.length / 2));
+  const rings: [number, number][] = [];
+  for (let k = 0; k < n; k++) {
+    const t = (glass.length * k) / n;
+    rings.push([Math.max(0.5, glass.r(t)), mouth + dir * t]);
+  }
+  const pos: number[] = [];
+  for (const [r, z] of rings)
+    for (let j = 0; j < segs; j++) {
+      const a = (TAU * j) / segs;
+      pos.push(r * Math.cos(a), r * Math.sin(a), z);
+    }
+  const base = pos.length / 3;
+  pos.push(0, 0, mouth, 0, 0, mouth + dir * glass.length);
+  const idx: number[] = [];
+  for (let k = 0; k < rings.length - 1; k++)
+    for (let j = 0; j < segs; j++) {
+      const a = k * segs + j;
+      const b = k * segs + ((j + 1) % segs);
+      idx.push(a, b, b + segs, a, b + segs, a + segs);
+    }
+  const last = (rings.length - 1) * segs;
+  for (let j = 0; j < segs; j++) {
+    idx.push(base, (j + 1) % segs, j);
+    idx.push(base + 1, last + j, last + ((j + 1) % segs));
+  }
+  return { positions: new Float32Array(pos), indices: new Uint32Array(idx) };
+}
+
 /** A hollow segment needs room for a disc hub at both ends. */
 const SHELL_MIN_H = 2 * (DISC.nut - DISC.t) + 8;
 
@@ -882,6 +1000,7 @@ function insertDiscs(all: Piece[], c: Ctx, extra: number, notes: string[]) {
     const b = slotOf(lo);
     const name = sl.clamp ? 'Klemschijf' : a && b ? `Tussenschijf ${a}–${b}` : a ? `Schijf onder ${a}` : b ? `Schijf boven ${b}` : 'Schijf';
     const pc = newPiece('disc', name, big?.color ?? '#f2efe8', t);
+    pc.material = big ? materialOf(big).material : undefined;
     pc.minInner = c.bore;
     // the hub (the rest of the nut) reaches into a shell: the one with the larger opening
     const roomUp = isShell(up) ? rim(up!, 0).ri : -1;
@@ -936,6 +1055,53 @@ function insertDiscs(all: Piece[], c: Ctx, extra: number, notes: string[]) {
       (lo.grooves ??= []).push({ face: 1, r: rim(up, 0).ro - wall / 2, hw: grooveHW(wall) });
     if (isShell(lo) && (up.role === 'seg' || up.role === 'kap')) (up.grooves ??= []).push({ face: 0, r: rim(lo, 1).ro - wall / 2, hw: grooveHW(wall) });
   }
+}
+
+/** Radius a neighbour on the tube covers at its face against another part (stack face 0 = bottom, 1 = top). */
+function coverRadius(nb: Piece, face: 0 | 1): number {
+  if (nb.role === 'shell') return nb.shell!.rims[face].ro;
+  if (nb.role === 'disc') return nb.discR ?? 0;
+  if (nb.role === 'posts' || !nb.final.length) return 0;
+  const s = stackFinal(nb);
+  return sampleAt(s, face === 0 ? 0 : nb.h, 'o') * (nb.role === 'seg' ? nb.pattern.min : 1);
+}
+
+/**
+ * Hidden vents through the kap ceiling: holes near the tube, a trench on the
+ * cavity side over the cup / socket (out to the free gap around it) and a
+ * 45° groove on the outer face that runs past the rim of the neighbouring part
+ * (air leaves through the joint line). `cover` = radius the neighbour covers.
+ */
+function ceilingVentPlan(kap: Piece, c: Ctx, cover: number): CeilingVents {
+  const s = stackFinal(kap);
+  const pend = c.pendant;
+  const faceR = sampleAt(s, pend ? kap.h : 0, 'o');
+  const iCav = sampleAt(s, pend ? kap.h - kap.ceil - 0.5 : kap.ceil + 0.5, 'i');
+  const h = HIDDEN;
+  const rHole = c.bore + 1.2 + h.hole;
+  const cupR = c.click ? c.click.Rc : c.socket.d / 2;
+  const rTrench = Math.max(rHole + 1, Math.min(iCav - 0.3, cupR + 6));
+  const rExit = cover >= rHole + h.hole + 0.5 ? (cover + 2 >= faceR - 1 ? faceR + 1 : cover + 2) : null;
+  // stay clear of post holes in the ceiling face (print coordinates: a flipped kap is mirrored in y)
+  const posts = kap.holes.filter((q) => q.face === (pend ? 1 : 0)).map((q) => ({ x: q.x, y: kap.flipped ? -q.y : q.y, r: q.r }));
+  const reach = Math.max(rTrench, rExit ?? rHole + h.hole);
+  const room = (th: number) => {
+    let m = Infinity;
+    for (const q of posts) {
+      const t = clamp(q.x * Math.cos(th) + q.y * Math.sin(th), rHole - h.hole, reach);
+      m = Math.min(m, Math.hypot(q.x - t * Math.cos(th), q.y - t * Math.sin(th)) - q.r - h.groove / 2 - 1);
+    }
+    return m;
+  };
+  let best = { phase: 0, score: -Infinity };
+  for (let k = 0; k < 24; k++) {
+    const phase = (k / 24) * (TAU / h.n);
+    let score = Infinity;
+    for (let j = 0; j < h.n; j++) score = Math.min(score, room(phase + (j * TAU) / h.n));
+    if (score > best.score) best = { phase, score };
+  }
+  const angles = Array.from({ length: h.n }, (_, j) => best.phase + (j * TAU) / h.n).filter((th) => room(th) > 0);
+  return { angles, rHole, rTrench, rExit, ceil: kap.ceil };
 }
 
 /** Samples of a disc in print orientation (plate on the bed, hub up). */
@@ -1015,8 +1181,17 @@ function build(p: Params, ctx: Parameters<ToolDef['build']>[1]): BuildOutput {
     throw new UserError('Een G9-fitting heeft geen schroefring om in de dop van de schroefbuis te klikken. Kies een E27- of E14-fitting met buitendraad, of zet Verbinding op "M10 draadbuis (gekocht)".');
   }
   const click = tube ? clickOf(fitDims(p, sockKey, notes), tube) : null;
-  const closed = kapSpec ? closedOf(p) : null;
+  const fluted = !!kapSpec && kapSpec.kap === 'geribbeld';
+  let closed = kapSpec ? closedOf(p) : null;
+  if (closed && fluted) {
+    notes.push('Dichte lamp: een geribbelde koker heeft geen gladde rand voor de schroefdraad — de tweede kap is weggelaten.');
+    closed = null;
+  }
   let layers = layersOf(p, kapSpec?.color ?? '#f2efe8');
+  if (fluted && isShaded(layers.specs[0])) {
+    notes.push('Geribbelde koker: de ribben zijn het patroon van laag 1 — het laagpatroon is weggelaten.');
+    layers = { ...layers, specs: [{ ...layers.specs[0], pat: 'segment' }, ...layers.specs.slice(1)] };
+  }
   if (closed && (layers.count > 1 || isShaded(layers.specs[0]))) {
     notes.push('Dichte lamp: een kap in lagen of met een laagpatroon past niet bij een tweede kap — de kap krijgt de textuur van het segment.');
     layers = { ...layers, count: 1, specs: [{ ...layers.specs[0], pat: 'segment' }] };
@@ -1059,6 +1234,7 @@ function build(p: Params, ctx: Parameters<ToolDef['build']>[1]): BuildOutput {
     throw new UserError('Een lamel (open ring) hangt aan de rand van een kap: zet eerst een kap en daarna afwisselend stijlen en lamellen.');
   }
   if (closed && chain.length) throw new UserError('Een dichte lamp kan geen stijlen en lamellen aan de rand van de kap hebben: zet "Dichte lamp" uit of verwijder de lamellen.');
+  if (fluted && chain.length) throw new UserError('Lamellen kunnen niet aan de rand van een geribbelde koker hangen: kies een andere kapvorm of verwijder de lamellen.');
   // chain from the kap outward: posts, lamel, posts, lamel …
   const outward = isPendant ? [...chain].reverse() : chain;
   outward.forEach((s, i) => {
@@ -1150,6 +1326,13 @@ function build(p: Params, ctx: Parameters<ToolDef['build']>[1]): BuildOutput {
     }
   }
   for (const pc of all) if (pc.role === 'cover') pc.flipped = isPendant;
+  if (kapPiece && fluted) {
+    // ribbed glass sleeve: straight fluted wall, wide enough for the socket (and the inner layers)
+    const spec = kapPiece.spec!;
+    const R = Math.max(spec.D / 2, kapTopR(kapPiece, c));
+    kapPiece.flute = fluteOf(R, spec.v, spec.n, spec.groove ?? 0.45, spec.round ?? 0.8, notes, kapPiece.name, (spec.scallop ?? 0) > 0.2);
+    kapPiece.pattern = ROUND;
+  }
 
   // printed tube: threaded discs close the shells
   if (tube) insertDiscs(all, c, extra, notes);
@@ -1170,6 +1353,8 @@ function build(p: Params, ctx: Parameters<ToolDef['build']>[1]): BuildOutput {
     if (lo.role === 'kap' && !pc.chain) lo.ceil = POST_HOLE + 1.5 + pc.postR;
     if (up.role === 'kap' && !pc.chain) up.ceil = POST_HOLE + 1.5 + pc.postR;
   });
+  // hidden vents: a thicker ceiling holds the channels (trench over the cup, groove under the neighbour)
+  if (closed?.vent === 'verborgen' && kapPiece) kapPiece.ceil = Math.max(kapPiece.ceil, HIDDEN.ceil);
   for (const pc of all) {
     if (pc.role === 'kap') pc.hub = isPendant ? [0, pc.ceil] : [pc.ceil, 0];
     if (pc.role === 'cover') pc.hub = isPendant ? [0, COVER.floor] : [COVER.floor, 0];
@@ -1225,7 +1410,9 @@ function build(p: Params, ctx: Parameters<ToolDef['build']>[1]): BuildOutput {
   for (const pc of all) if (pc.role === 'disc') checkFit(pc.name, 2 * pc.discR!, pc.h + (pc.hubLen ?? 0));
   for (const pc of all)
     if (pc.role === 'kap' && pc.h < pc.ceil + 15) throw new UserError(`${pc.name}: een kap moet minstens ${Math.ceil(pc.ceil + 15)} mm hoog zijn.`);
-  if (kapPiece?.layer && 2 * kapTopR(kapPiece, c) > kapPiece.spec!.D + 0.5) {
+  if (kapPiece?.flute && 2 * kapPiece.flute.R > kapPiece.spec!.D + 0.5) {
+    notes.push(`${kapPiece.name}: breder gemaakt (Ø${(2 * kapPiece.flute.R).toFixed(0)} mm) zodat ${c.layered ? 'de lagen, de tussenruimtes en ' : ''}de ${click ? 'dop met de fitting' : 'fitting'} tussen de ribben passen.`);
+  } else if (kapPiece?.layer && 2 * kapTopR(kapPiece, c) > kapPiece.spec!.D + 0.5) {
     notes.push(`${kapPiece.name}: breder gemaakt (Ø${(2 * kapTopR(kapPiece, c)).toFixed(0)} mm) zodat ${c.layered ? 'alle lagen, de tussenruimtes en ' : ''}de fitting erin passen.`);
   } else if (kapPiece && click && 2 * kapTopR(kapPiece, c) > kapPiece.spec!.D + 0.5) {
     notes.push(`${kapPiece.name}: breder gemaakt (Ø${(2 * kapTopR(kapPiece, c)).toFixed(0)} mm) zodat de dop met de fitting erin past.`);
@@ -1350,20 +1537,31 @@ function build(p: Params, ctx: Parameters<ToolDef['build']>[1]): BuildOutput {
   let kap2: Piece | null = null;
   if (closed && kapPiece && seam) {
     const spec = kapPiece.spec!;
-    const H2 = closed.shape === 'spiegel' ? kapPiece.h : closed.H;
+    const name = `${spec.slot}. ${isPendant ? 'Onderkap' : 'Bovenkap'}`;
+    const poleR = Math.max(16, Math.min(0.3 * seam.R, 40));
+    let H2 = closed.shape === 'spiegel' ? kapPiece.h : closed.H;
+    let raw: LatheSample[];
+    let inward: Inward | undefined;
+    if (closed.shape === 'binnen') {
+      // the wall runs on from the seam (straight, or as the kap's mirror image), then curves in to the opening
+      const mirror = partnerRadius(spec, { ...closed, shape: 'spiegel' }, seam.R, kapPiece.h, poleR);
+      inward = inwardSamples(closed.wall === 'kap' ? mirror : () => seam.R, seam, closed, c.shadeWall, kapPiece.pattern.min < 1, notes, name);
+      H2 = inward.H;
+      raw = inward.samples;
+    } else {
+      const radius = partnerRadius(spec, closed, seam.R, H2, poleR);
+      const ring = ringFactor({ ...spec, H: H2 }, c.texDepth, seam.R);
+      raw = partnerSamples((d) => radius(d) * ring(H2 - d), H2, seam, c.shadeWall, CLOSED_FLOOR);
+      // plain at the seam (the band), the texture of the kap further down
+      for (const q of raw) q.tex = kapPiece.pattern.min < 1 ? smoothstep(seam.depth + 2, seam.depth + 7, H2 - q.z) : 0;
+    }
     const seamZ = isPendant ? kapPiece.z0 : kapPiece.z0 + kapPiece.h;
-    kap2 = newPiece('kap2', `${spec.slot}. ${isPendant ? 'Onderkap' : 'Bovenkap'}`, kapPiece.color, H2, spec);
+    kap2 = newPiece('kap2', name, kapPiece.color, H2, spec);
     kap2.seam = seam;
-    kap2.vents = closed.vents;
+    kap2.inward = inward;
     kap2.pattern = kapPiece.pattern;
     kap2.flipped = !isPendant;
     kap2.z0 = isPendant ? seamZ - H2 : seamZ;
-    const poleR = Math.max(16, Math.min(0.3 * seam.R, 40));
-    const radius = partnerRadius(spec, closed, seam.R, H2, poleR);
-    const ring = ringFactor({ ...spec, H: H2 }, c.texDepth, seam.R);
-    const raw = partnerSamples((d) => radius(d) * ring(H2 - d), H2, seam, c.shadeWall, CLOSED_FLOOR);
-    // plain at the seam (the band), the texture of the kap further down
-    for (const q of raw) q.tex = kap2.pattern.min < 1 ? smoothstep(seam.depth + 2, seam.depth + 7, H2 - q.z) : 0;
     kap2.final = printable(raw, kap2.pattern, 1);
     kap2.zmin = 0;
     kap2.zmax = H2;
@@ -1384,7 +1582,10 @@ function build(p: Params, ctx: Parameters<ToolDef['build']>[1]): BuildOutput {
   for (const o of outlines) {
     const pc = { name: o.name };
     const d = clearanceTo(o, glass, mouth, dir);
-    if (d < 0) throw new UserError(`De lamp (${bulb.label.split(' —')[0]}) raakt ${pc.name}. Kies een kleinere lamp of maak de kap${kap2 ? ' of de tweede kap' : '/lamel'} ruimer.`);
+    if (d < 0) {
+      if (kap2?.inward && o.name === kap2.name) throw new UserError(`De lamp (${bulb.label.split(' —')[0]}) raakt de bocht van ${kap2.name}. Maak het rechte stuk langer, de opening groter of kies een kleinere lamp.`);
+      throw new UserError(`De lamp (${bulb.label.split(' —')[0]}) raakt ${pc.name}. Kies een kleinere lamp of maak de kap${kap2 ? ' of de tweede kap' : '/lamel'} ruimer.`);
+    }
     if (d < nearest) {
       nearest = d;
       nearestName = pc.name;
@@ -1418,6 +1619,12 @@ function build(p: Params, ctx: Parameters<ToolDef['build']>[1]): BuildOutput {
   };
   const rows: (string | number)[][] = [];
   let savedG = 0;
+  // closed lamp ventilation: open area (mm²) at the kap and at the second shade, the channels in the ceiling
+  let kapVentArea = 0;
+  let kap2VentArea = 0;
+  let ceilVents: CeilingVents | null = null;
+  let ceilVentsUnder: string | null = null;
+  let seamArea = 0;
 
   // post holes in the neighbours of every posts spacer
   let parity = 0;
@@ -1464,7 +1671,7 @@ function build(p: Params, ctx: Parameters<ToolDef['build']>[1]): BuildOutput {
     checkFit(pc.name, 2 * maxO, printH);
     const solid = shellSolid(M, pc);
     const idx = parts.length;
-    parts.push({ name: pc.name, solid, color: pc.color, material: 'petg-translucent', purpose: 'lamp', select: selectOf(pc) });
+    parts.push({ name: pc.name, solid, color: pc.color, ...materialOf(pc), select: selectOf(pc) });
     scene.push({ kind: 'part', part: idx, matrix: placeMatrix(pc) });
     pc.partIndex = idx;
     masses.push({ m: grams(solid), z: pc.z0 + pc.h / 2 });
@@ -1475,7 +1682,7 @@ function build(p: Params, ctx: Parameters<ToolDef['build']>[1]): BuildOutput {
       const n = pc.postCount!;
       const L = pc.h + 2 * POST_HOLE;
       const idx = parts.length;
-      parts.push({ name: `${pc.name} (Ø${(2 * pc.postR!).toFixed(0)} × ${L.toFixed(0)} mm)`, solid: pinSolid(M, pc.postR!, L), quantity: n, color: pc.color, select: selectOf(pc) });
+      parts.push({ name: `${pc.name} (Ø${(2 * pc.postR!).toFixed(0)} × ${L.toFixed(0)} mm)`, solid: pinSolid(M, pc.postR!, L), quantity: n, color: pc.color, ...materialOf(pc), select: selectOf(pc) });
       for (let k = 0; k < n; k++) {
         const a = pc.postPhase! + (k * TAU) / n;
         scene.push({ kind: 'part', part: idx, matrix: translation(pc.postCircle! * Math.cos(a), pc.postCircle! * Math.sin(a), pc.z0 - POST_HOLE) });
@@ -1490,7 +1697,7 @@ function build(p: Params, ctx: Parameters<ToolDef['build']>[1]): BuildOutput {
       let solid = discSolid(M, tube!, { R: pc.discR!, t: pc.h, hub: pc.hubLen ?? 0, grooves });
       if (pc.holes.length) solid = solid.subtract(M.Manifold.union(holeCuts(pc)));
       const idx = parts.length;
-      parts.push({ name: pc.name, solid, color: pc.color, select: selectOf(pc) });
+      parts.push({ name: pc.name, solid, color: pc.color, ...(pc.material ? { material: pc.material } : {}), select: selectOf(pc) });
       scene.push({ kind: 'part', part: idx, matrix: placeRot(pc) });
       pc.partIndex = idx;
       masses.push({ m: grams(solid), z: pc.z0 + pc.h / 2 });
@@ -1510,7 +1717,7 @@ function build(p: Params, ctx: Parameters<ToolDef['build']>[1]): BuildOutput {
       if (sh.shrunk < 0.97) notes.push(`${pc.name}: zonder support kan de wand niet vlakker dan 45° lopen (in beide richtingen, voor een holle schaal), dus is hij Ø${(2 * maxO).toFixed(0)} mm geworden (i.p.v. Ø${pc.spec!.D.toFixed(0)}). Maak hem hoger voor de volle maat.`);
       const solid = gridSolid(M, shellGrid(sh, pc.flipped, need));
       const idx = parts.length;
-      parts.push({ name: `${pc.name} (hol)`, solid, color: pc.color, select: selectOf(pc), ...(c.shellVase ? { estimate: 'vase' as const } : {}) });
+      parts.push({ name: `${pc.name} (hol)`, solid, color: pc.color, ...materialOf(pc), select: selectOf(pc), ...(c.shellVase ? { estimate: 'vase' as const } : {}) });
       scene.push({ kind: 'part', part: idx, matrix: placeMatrix(pc) });
       pc.partIndex = idx;
       const g = grams(solid);
@@ -1546,21 +1753,31 @@ function build(p: Params, ctx: Parameters<ToolDef['build']>[1]): BuildOutput {
       // closed lamp: threaded neck on the rim (top of the print)
       const zr = pc.final[pc.final.length - 1].z;
       add.push(neckSolid(M, pc.seam, zr, latheInnerSegs(pc.final)));
-      if (closed?.vents && pc.role === 'kap') {
+      if (closed?.vent === 'gaatjes' && pc.role === 'kap') {
         // vents near the ceiling/floor (bed side of the print): diamonds, 45° edges
-        const a = 2.6;
+        const a = VISIBLE.a;
         const zv = pc.ceil + 4 + a;
         if (zv + a < zr - 10) {
           const rin = Math.min(sampleAt(pc.final, zv - a, 'i'), sampleAt(pc.final, zv + a, 'i'));
           const rout = Math.max(sampleAt(pc.final, zv - a, 'o'), sampleAt(pc.final, zv + a, 'o'));
-          cut.push(...ventCutters(M, 10, zv, rin - 1.5, rout + 1.5, a, Math.PI / 10));
+          cut.push(...ventCutters(M, VISIBLE.n, zv, rin - 1.5, rout + 1.5, a, Math.PI / VISIBLE.n));
+          kapVentArea += VISIBLE.n * 2 * a * a;
         }
+      }
+      if (closed?.vent === 'verborgen' && pc.role === 'kap') {
+        const i = all.indexOf(pc);
+        const nb = isPendant ? all[i + 1] : all[i - 1];
+        const fallback = tube ? topCapLayout(tube).minR : isPendant && bool(p, 'cableCap') ? CAP.r : 10;
+        const cover = nb ? coverRadius(nb, isPendant ? 0 : 1) : isPendant ? fallback : 0;
+        ceilVents = ceilingVentPlan(pc, c, cover);
+        ceilVentsUnder = ceilVents.rExit !== null ? (nb ? `de rand van het deel ${isPendant ? 'erboven' : 'eronder'} (${nb.name})` : 'het topkapje') : null;
+        if (ceilVents.angles.length) cut.push(...ceilingVentCutters(M, ceilVents));
       }
     }
     if (add.length) solid = M.Manifold.union([solid, ...add]);
     if (cut.length) solid = solid.subtract(M.Manifold.union(cut));
     const idx = parts.length;
-    parts.push({ name: pc.name, solid, color: pc.color, select: selectOf(pc), ...(pc.role === 'kap' || pc.role === 'lamel' ? { material: 'petg-translucent', purpose: 'lamp' as const } : {}) });
+    parts.push({ name: pc.name, solid, color: pc.color, select: selectOf(pc), ...materialOf(pc) });
     scene.push({ kind: 'part', part: idx, matrix: pc.rot !== undefined ? placeRot(pc) : placeMatrix(pc) });
     pc.partIndex = idx;
     masses.push({ m: grams(solid), z: pc.z0 + pc.h / 2 });
@@ -1589,16 +1806,28 @@ function build(p: Params, ctx: Parameters<ToolDef['build']>[1]): BuildOutput {
     }
     const outer: Ring[] = rs.map((q) => ({ z: q.z, r: (th: number) => q.o * (1 - q.tex * (1 - pat.fn(th))) }));
     const zBand = H2 - seam.depth;
-    const roundIn = s.filter((q) => q.z >= CLOSED_FLOOR - 1e-6 && q.z < zBand - 1e-6);
+    // inward shape: open at the bottom (the inner wall starts on the bed); else a closed floor
+    const floor = kap2.inward ? 0 : CLOSED_FLOOR;
+    const roundIn = s.filter((q) => q.z >= floor - 1e-6 && q.z < zBand - 1e-6);
     const innerRings: Ring[] = [
-      ...ringsOf([CLOSED_FLOOR, ...simplifySamples(roundIn, 0.03).map((q) => q.z).filter((zz) => zz > CLOSED_FLOOR + 1e-3 && zz < zBand - 1e-3), zBand], (zz) => sampleAt(s, zz, 'i')),
+      ...ringsOf([floor, ...simplifySamples(roundIn, 0.03).map((q) => q.z).filter((zz) => zz > floor + 1e-3 && zz < zBand - 1e-3), zBand], (zz) => sampleAt(s, zz, 'i')),
       ...bandRings(seam, H2),
     ];
     let solid = wallSolid(M, { segs: pat.segs, rings: outer }, { segs: seam.segs, rings: innerRings });
-    if (kap2.vents) solid = solid.subtract(M.Manifold.union(floorVents(M, 6, Math.min(0.55 * sampleAt(s, 0, 'o'), sampleAt(s, 0, 'o') - 6), 2.2, CLOSED_FLOOR)));
+    const vent = closed!.vent;
+    if (vent === 'gaatjes' && !kap2.inward) {
+      const holes = floorVents(M, 6, Math.min(0.55 * sampleAt(s, 0, 'o'), sampleAt(s, 0, 'o') - 6), 2.2, CLOSED_FLOOR);
+      solid = solid.subtract(M.Manifold.union(holes));
+      kap2VentArea += holes.length * Math.PI * 2.2 * 2.2;
+    }
+    if (vent === 'verborgen' && !kap2.inward) {
+      const angles = Array.from({ length: HIDDEN.n }, (_, j) => ((j + 0.5) * TAU) / HIDDEN.n);
+      solid = solid.subtract(M.Manifold.union(seamVentCutters(M, seam, H2, angles)));
+      seamArea = seamVentArea(seam, angles.length);
+    }
     kap2.rot = meshTurn(SEAM_THREAD, { z: printOrigin(kapPiece!), rot: 0, flip: kapPiece!.flipped, phase: kapPiece!.final[kapPiece!.final.length - 1].z }, { z: printOrigin(kap2), flip: kap2.flipped, phase: H2 });
     const idx = parts.length;
-    parts.push({ name: kap2.name, solid, color: kap2.color, material: 'petg-translucent', purpose: 'lamp', select: selectOf(kap2) });
+    parts.push({ name: kap2.name, solid, color: kap2.color, ...materialOf(kap2), select: selectOf(kap2) });
     scene.push({ kind: 'part', part: idx, matrix: placeRot(kap2) });
     kap2.partIndex = idx;
     masses.push({ m: grams(solid), z: kap2.z0 + H2 / 2 });
@@ -1635,6 +1864,10 @@ function build(p: Params, ctx: Parameters<ToolDef['build']>[1]): BuildOutput {
     const lens = splitTube(tube, need, U.z, click.H);
     let zt = 0;
     let rt = 0;
+    // the cup: its own colour, or (bare bulb, no kap around it) the colour of the part it carries
+    const cupPick = COLOR_OPTIONS.some((o) => o.value === p.cupColor) ? str(p, 'cupColor') : null;
+    const cupNext = isPendant ? all.find((q) => !q.chain) : [...all].reverse().find((q) => !q.chain);
+    const cupColor = cupPick ?? (!hasKap && cupNext ? cupNext.color : null);
     lens.forEach((len, i) => {
       const pcs: TubePiece = { index: i + 1, len, cup: i === 0 ? click : null, female: i > 0, stub: true };
       const solid = tubePieceSolid(M, tube, pcs);
@@ -1644,8 +1877,9 @@ function build(p: Params, ctx: Parameters<ToolDef['build']>[1]): BuildOutput {
       if (!isPendant) mat = mul(mat, rotX(180));
       const idx = parts.length;
       const name = lens.length > 1 ? `Schroefbuis ${i + 1}/${lens.length}${i === 0 ? ' met klik' : ''}` : 'Schroefbuis met klik';
-      const color = isPendant ? specs[0].color : str(p, 'baseColor');
-      parts.push({ name, solid, color, select: 'tube', ...(i === 0 ? { purpose: 'lamp' as const } : {}) });
+      const color = i === 0 && cupColor ? cupColor : isPendant ? specs[0].color : str(p, 'baseColor');
+      // an own cup colour is printed in PETG (it carries the socket, close to the bulb)
+      parts.push({ name, solid, color, select: 'tube', ...(i === 0 ? { purpose: 'lamp' as const, ...(cupPick ? { material: 'petg-hf' } : {}) } : {}) });
       scene.push({ kind: 'part', part: idx, matrix: mat });
       const h = pieceHeight(tube, pcs);
       masses.push({ m: grams(solid), z: zOff + (dir * -h) / 2 });
@@ -1662,8 +1896,11 @@ function build(p: Params, ctx: Parameters<ToolDef['build']>[1]): BuildOutput {
 
   // pendant extras: cap over the nut and the ceiling canopy (printed tube: the threaded top cap)
   const extras: Piece[] = [];
+  // the cord cap: its own (matte) colour, like a coloured cylinder on the cord, or that of the top part
+  const capPick = COLOR_OPTIONS.some((o) => o.value === p.capColor) ? str(p, 'capColor') : null;
   if (isPendant && !tube && bool(p, 'cableCap')) {
-    const cap = newPiece('cap', 'Kapje trekontlasting', specs[0].color, CAP.h);
+    const cap = newPiece('cap', 'Kapje trekontlasting', capPick ?? specs[0].color, CAP.h);
+    if (capPick) cap.material = 'pla-matte';
     cap.minInner = CAP.holeR;
     cap.z0 = stackTop;
     extras.push(cap);
@@ -1681,10 +1918,11 @@ function build(p: Params, ctx: Parameters<ToolDef['build']>[1]): BuildOutput {
     const solid = topCapSolid(M, tube, { R, grooves });
     const rot = meshed(topCapZ, false);
     const idx = parts.length;
-    parts.push({ name: 'Topkapje (trekontlasting)', solid, color: topPc.color, select: 'canopy' });
+    const capColor = capPick ?? topPc.color;
+    parts.push({ name: 'Topkapje (trekontlasting)', solid, color: capColor, ...(capPick ? { material: 'pla-matte' } : {}), select: 'canopy' });
     scene.push({ kind: 'part', part: idx, matrix: mul(translation(0, 0, topCapZ), rotZ((rot * 180) / Math.PI)) });
     masses.push({ m: grams(solid), z: topCapZ + L.H / 2 });
-    rows.push(['–', 'Topkapje (moer + trekontlasting)', `Ø${(2 * R).toFixed(0)} × ${L.H.toFixed(0)} mm`, colorName(topPc.color), 'rechtop']);
+    rows.push(['–', 'Topkapje (moer + trekontlasting)', `Ø${(2 * R).toFixed(0)} × ${L.H.toFixed(0)} mm`, colorName(capColor), 'rechtop']);
     topCapZ += L.H;
   }
   let canopyTop = (tube ? topCapZ : stackTop) + 60;
@@ -1730,7 +1968,7 @@ function build(p: Params, ctx: Parameters<ToolDef['build']>[1]): BuildOutput {
       solid = M.Manifold.union([solid, ...bosses]).subtract(M.Manifold.union(holes));
     }
     const idx = parts.length;
-    parts.push({ name: pc.name, solid, color: pc.color, select: selectOf(pc) });
+    parts.push({ name: pc.name, solid, color: pc.color, ...(pc.material ? { material: pc.material } : {}), select: selectOf(pc) });
     scene.push({ kind: 'part', part: idx, matrix: placeMatrix(pc) });
     const maxO = Math.max(...pc.final.map((q) => q.o));
     rows.push(['–', pc.name, `Ø${(2 * maxO).toFixed(0)} × ${pc.h.toFixed(0)} mm`, colorName(pc.color), pc.flipped ? 'ondersteboven' : 'rechtop']);
@@ -1746,7 +1984,7 @@ function build(p: Params, ctx: Parameters<ToolDef['build']>[1]): BuildOutput {
     scene.push({ kind: 'box', size: [2 * click.bodyR, 2 * click.bodyR, Math.abs(sockTop - mouth)], position: [-click.bodyR, -click.bodyR, Math.min(sockTop, mouth)], color: '#6b6f76', material: 'ghost', label: `Fitting ${socket.label}` });
     scene.push({ kind: 'box', size: [click.dims.ringD, click.dims.ringD, click.dims.ringH], position: [-click.dims.ringD / 2, -click.dims.ringD / 2, isPendant ? ringZ : ringZ - click.dims.ringH], color: '#6b6f76', material: 'ghost', label: 'Schroefring' });
   } else scene.push({ kind: 'box', size: [socket.d, socket.d, socket.h], position: [-socket.d / 2, -socket.d / 2, Math.min(socketFace, mouth)], color: '#6b6f76', material: 'ghost', label: `Fitting ${socket.label}` });
-  scene.push({ kind: 'box', size: [bulb.d, bulb.d, glass.length], position: [-bulb.d / 2, -bulb.d / 2, Math.min(mouth, tip)], color: '#f3d36b', material: 'ghost', label: bulb.label });
+  scene.push({ kind: 'mesh', mesh: bulbMesh(glass, mouth, dir), color: '#f3d36b', material: 'ghost', label: bulb.label });
   const cordFrom = tube ? topCapZ : stackTop;
   if (isPendant) scene.push({ kind: 'box', size: [6, 6, Math.max(1, canopyTop - cordFrom)], position: [-3, -3, cordFrom], color: '#3a3d42', material: 'ghost', label: 'Snoer' });
 
@@ -1777,6 +2015,23 @@ function build(p: Params, ctx: Parameters<ToolDef['build']>[1]): BuildOutput {
     warnings.push(`De hanglamp weegt ≈ ${(total / 1000).toFixed(1)} kg: hang hem aan een plafondhaak met staalkabel, niet alleen aan het snoer.`);
   }
   if (kap2) kv.push(['Naad', `${isPendant ? 'onderkap' : 'bovenkap'} schroeft op de kap: Ø${(2 * seam!.R).toFixed(0)} mm, 2 gangen × 4 mm, speling ${seam!.c.toFixed(2)} mm${closed!.center ? `, op ${Math.abs(bulbCentre - (isPendant ? kapPiece!.z0 : kapPiece!.z0 + kapPiece!.h)).toFixed(0)} mm van het midden van de lamp` : ''}`]);
+  if (kap2 && closed) {
+    // the kap side is the top of a pendant (warm air out) and the bottom of a table lamp (cool air in)
+    const opening = kap2.inward ? Math.PI * kap2.inward.rOpen ** 2 : 0;
+    const kapSide = closed.vent === 'verborgen' ? (ceilVents ? ceilingVentArea(ceilVents) : 0) : kapVentArea;
+    const otherSide = kap2.inward ? opening : closed.vent === 'verborgen' ? seamArea : kap2VentArea;
+    const kapWhere = closed.vent === 'verborgen' ? (ceilVentsUnder ? `door het plafond van de kap, naar buiten onder ${ceilVentsUnder}` : 'door het plafond van de kap (gaatjes bovenop)') : 'ruitjes in de kap';
+    const otherWhere = kap2.inward ? `de opening Ø${(2 * kap2.inward.rOpen).toFixed(0)} mm` : closed.vent === 'verborgen' ? 'sleufjes in de naad' : `gaatjes in de ${isPendant ? 'bodem' : 'top'}`;
+    if (closed.vent === 'geen' && !kap2.inward) kv.push(['Ventilatie', 'geen (helemaal dicht)']);
+    else {
+      const part = (what: string, area: number, where: string) => (area > 0 ? `${what} ≈ ${area.toFixed(0)} mm² (${where})` : '');
+      const out = isPendant ? part('uit', kapSide, kapWhere) : part('uit', otherSide, otherWhere);
+      const inn = isPendant ? part('in', otherSide, otherWhere) : part('in', kapSide, kapWhere);
+      const label = closed.vent === 'verborgen' ? 'verborgen' : closed.vent === 'gaatjes' ? 'zichtbare gaatjes' : 'alleen de opening';
+      kv.push(['Ventilatie', `${label} · ${[out, inn].filter(Boolean).join(' · ')}`]);
+    }
+    if (closed.vent === 'geen' && !kap2.inward) warnings.push('Dichte lamp zonder ventilatie: gebruik alleen een LED-lamp tot ~5 W en print de kappen in PETG (PLA wordt zacht van de warmte).');
+  }
   info.push({ kind: 'kv', title: 'Lamp', rows: kv });
   info.push({ kind: 'table', title: 'Printdelen (stapel van boven naar beneden)', headers: ['Seg.', 'Vorm', 'Maat', 'Kleur', 'Printstand'], rows: rows.reverse() });
   if (tube && click) {
@@ -1804,7 +2059,20 @@ function build(p: Params, ctx: Parameters<ToolDef['build']>[1]): BuildOutput {
   } else {
     tips.push('Elk segment is een eigen printdeel: print ze in hun eigen kleur. De centreerkegels tussen de segmenten houden de stapel recht; de draadbuis klemt alles vast.');
   }
-  if (kap2) tips.push(`Dichte lamp: alleen LED-lampen (de warmte kan er niet goed uit). ${closed!.vents ? 'De ventilatiegaatjes boven en onder houden de lucht in beweging.' : 'Zet de ventilatiegaatjes aan als het kan.'} Draai de ${isPendant ? 'onderkap' : 'bovenkap'} los om de lamp te wisselen.`);
+  if (kap2) {
+    const v = closed!.vent;
+    const air =
+      v === 'verborgen'
+        ? `De warme lucht ontsnapt verborgen door kanaaltjes in het plafond van de kap en ${kap2.inward ? 'de opening' : 'smalle sleufjes in de naad'} laat koele lucht binnen: van opzij zie je geen gaten.`
+        : v === 'gaatjes'
+          ? 'De ventilatiegaatjes boven en onder houden de lucht in beweging.'
+          : kap2.inward
+            ? 'De opening ventileert; kies "Verborgen" voor een luchtstroom van onder naar boven.'
+            : 'Zonder ventilatie: kies liever "Verborgen", dat zie je niet.';
+    const swap = kap2.inward && 2 * kap2.inward.rOpen >= bulb.d + 4 ? 'Wissel de lamp door de opening' : `Draai de ${isPendant ? 'onderkap' : 'bovenkap'} los om de lamp te wisselen`;
+    tips.push(`Dichte lamp: alleen LED-lampen (de warmte kan er niet goed uit). ${air} ${swap}.`);
+    if (kap2.inward) tips.push(`${kap2.name.replace(/^\d+\. /, '')} met opening: print met de opening op het bed en de rand met schroefdraad boven; de bocht naar binnen is 45° (afgerond), dus geen support.`);
+  }
   tips.push(
     'Kappen en lamellen in wit PETG/PLA met 1–2 wandlussen en 0% infill laten het licht mooi door. Massieve segmenten: 2–3 wanden en 10–15% infill is genoeg.',
     'Bollen en koepels hebben aan de onderkant een kegel van 45°: zo printen ze zonder support.',
@@ -1827,6 +2095,8 @@ function build(p: Params, ctx: Parameters<ToolDef['build']>[1]): BuildOutput {
 
 /** Floor of the second shade of a closed lamp (mm). */
 const CLOSED_FLOOR = 2;
+/** Visible vents of a closed lamp: diamonds (half diagonal a) around the kap near its ceiling. */
+const VISIBLE = { n: 10, a: 2.6 };
 
 function hardwarePrinted(isPendant: boolean, socket: Socket, click: Click, bulb: Bulb, bulbKey: string, base: boolean, felt: boolean, ballast: string, canopy: boolean, ballastG: number): (string | number)[][] {
   const d = click.dims;
@@ -2009,7 +2279,10 @@ function assembly(socket: Socket, base: boolean, cover: boolean, kap: boolean, c
 // ---------------------------------------------------------------------------
 // Presets and randomize
 
-const slot = (i: number, s: Partial<{ shape: string; kap: string; D: number; H: number; v: number; n: number; flip: boolean; tex: string; texN: number; color: string }>): Partial<Params> => {
+const slot = (
+  i: number,
+  s: Partial<{ shape: string; kap: string; D: number; H: number; v: number; n: number; flip: boolean; tex: string; texN: number; color: string; mat: string; groove: number; round: number; scallop: number }>,
+): Partial<Params> => {
   const out: Partial<Params> = {};
   if (s.shape !== undefined) out[`s${i}Shape`] = s.shape;
   if (s.kap !== undefined) out[`s${i}Kap`] = s.kap;
@@ -2021,6 +2294,10 @@ const slot = (i: number, s: Partial<{ shape: string; kap: string; D: number; H: 
   out[`s${i}Tex`] = s.tex ?? 'glad';
   if (s.texN !== undefined) out[`s${i}TexN`] = s.texN;
   if (s.color !== undefined) out[`s${i}Color`] = s.color;
+  if (s.mat !== undefined) out[`s${i}Mat`] = s.mat;
+  if (s.groove !== undefined) out[`s${i}Groove`] = s.groove;
+  if (s.round !== undefined) out[`s${i}Round`] = s.round;
+  if (s.scallop !== undefined) out[`s${i}Scallop`] = s.scallop;
   return out;
 };
 const stack = (...slots: Parameters<typeof slot>[1][]): Partial<Params> => Object.assign({ count: slots.length }, ...slots.map((s, i) => slot(i + 1, s)));
@@ -2036,6 +2313,7 @@ const BLACK = '#2b2b2e';
 const PINK = '#e7a3b0';
 const SAGE = '#8fae8b';
 const ORANGE = '#e07b39';
+const GREEN = '#3f8f55';
 
 const presets: Preset[] = [
   {
@@ -2216,7 +2494,7 @@ const presets: Preset[] = [
   {
     name: 'Dichte bol (hanglamp)',
     values: {
-      lampType: 'pendant', socket: 'e27', bulb27: 'a60', closed: true, closedShape: 'spiegel', centerBulb: true, vents: true,
+      lampType: 'pendant', socket: 'e27', bulb27: 'a60', closed: true, closedShape: 'spiegel', centerBulb: true,
       ...stack(
         { shape: 'cilinder', D: 46, H: 30, v: 40, color: W },
         { shape: 'kap', kap: 'koepel', D: 250, H: 125, tex: 'ribbels', texN: 64, color: W },
@@ -2226,10 +2504,59 @@ const presets: Preset[] = [
   {
     name: 'Dichte dubbele kegel (hanglamp)',
     values: {
-      lampType: 'pendant', socket: 'e27', bulb27: 'a60', closed: true, closedShape: 'spiegel', centerBulb: true, vents: true, canopyColor: ORANGE,
+      lampType: 'pendant', socket: 'e27', bulb27: 'a60', closed: true, closedShape: 'spiegel', centerBulb: true, canopyColor: ORANGE,
       ...stack(
         { shape: 'bol', D: 60, H: 48, v: 30, color: ORANGE },
         { shape: 'kap', kap: 'kegel', D: 230, H: 120, v: 10, tex: 'plisse', texN: 120, color: ORANGE },
+      ),
+    },
+  },
+  {
+    name: 'Dichte bol met opening (hanglamp)',
+    values: {
+      lampType: 'pendant', socket: 'e27', bulb27: 'g95', closed: true, closedShape: 'binnen', closedWall: 'kap', closedDrop: 30, closedOpen: 120, centerBulb: true, vent: 'verborgen',
+      ...stack(
+        { shape: 'cilinder', D: 46, H: 30, v: 40, color: W },
+        { shape: 'kap', kap: 'koepel', D: 250, H: 125, tex: 'ribbels', texN: 64, color: W },
+      ),
+    },
+  },
+  {
+    name: 'Gele koker (hanglamp)',
+    values: {
+      lampType: 'pendant', socket: 'e27', bulb27: 'a60', capColor: YELLOW, canopyColor: YELLOW, shadeWall: 1, layers: '2', layerGap: 4,
+      kl1Pat: 'segment', kl2Pat: 'glad', kl2Len: 122, kl2Color: GREEN, kl2Mat: 'mat',
+      ...stack(
+        { shape: 'schijf', D: 146, H: 8, v: 40, color: W, mat: 'mat' },
+        { shape: 'kap', kap: 'geribbeld', D: 140, H: 210, v: 55, n: 28, groove: 42, round: 85, color: W },
+      ),
+    },
+  },
+  {
+    name: 'Rode kartelkap (hanglamp)',
+    values: {
+      lampType: 'pendant', socket: 'e27', bulb27: 'a60', capColor: RED, canopyColor: RED, shadeWall: 1,
+      ...stack({ shape: 'kap', kap: 'geribbeld', D: 150, H: 175, v: 60, n: 26, groove: 40, round: 90, scallop: 24, color: W }),
+    },
+  },
+  {
+    name: 'Roze ring met blote lamp (hanglamp)',
+    values: {
+      lampType: 'pendant', socket: 'e27', bulb27: 'g95', capColor: PINK, canopyColor: PINK, cupColor: BLUE,
+      ...stack(
+        { shape: 'ribring', D: 210, H: 16, v: 70, n: 40, groove: 42, round: 90, color: W },
+        { shape: 'schijf', D: 84, H: 18, v: 60, color: BLUE, mat: 'mat' },
+      ),
+    },
+  },
+  {
+    name: 'Blauw-oranje ring (hanglamp)',
+    values: {
+      lampType: 'pendant', socket: 'e27', bulb27: 'a60', capColor: BLUE, canopyColor: BLUE,
+      ...stack(
+        { shape: 'schijf', D: 120, H: 8, v: 30, color: ORANGE, mat: 'mat' },
+        { shape: 'ribring', D: 230, H: 14, v: 70, n: 44, groove: 42, round: 90, color: W },
+        { shape: 'kap', kap: 'cilinder', D: 170, H: 120, v: 0, color: W, mat: 'mat' },
       ),
     },
   },
@@ -2250,7 +2577,7 @@ const presets: Preset[] = [
 
 const rnd = (a: number, b: number, step = 1) => Math.round((a + Math.random() * (b - a)) / step) * step;
 const pick = <T,>(xs: T[]) => xs[Math.floor(Math.random() * xs.length)];
-const SOLID_SHAPES = ['bol', 'kussen', 'cilinder', 'tol', 'diabolo', 'kegel', 'koepel', 'boog', 'trap', 'bloem', 'tandwiel', 'schijf', 'hals'];
+const SOLID_SHAPES = ['bol', 'kussen', 'cilinder', 'tol', 'diabolo', 'kegel', 'koepel', 'boog', 'trap', 'bloem', 'tandwiel', 'schijf', 'hals', 'ribring'];
 
 function randomize(): Partial<Params> {
   const isPendant = Math.random() < 0.5;
@@ -2259,13 +2586,13 @@ function randomize(): Partial<Params> {
   const slots: Parameters<typeof slot>[1][] = [];
   for (let i = 0; i < n; i++) {
     const shape = pick(SOLID_SHAPES);
-    const flat = ['bloem', 'tandwiel', 'schijf', 'kussen'].includes(shape);
+    const flat = ['bloem', 'tandwiel', 'schijf', 'kussen', 'ribring'].includes(shape);
     slots.push({
       shape,
       D: shape === 'hals' ? rnd(22, 40) : rnd(60, 170),
       H: flat ? rnd(8, 30) : rnd(30, 90),
       v: rnd(0, 80),
-      n: shape === 'bloem' ? rnd(5, 10) : shape === 'tandwiel' ? rnd(12, 28) : rnd(1, 4),
+      n: shape === 'bloem' ? rnd(5, 10) : shape === 'tandwiel' ? rnd(12, 28) : shape === 'ribring' ? rnd(16, 48) : rnd(1, 4),
       flip: Math.random() < 0.2,
       tex: Math.random() < 0.5 ? 'glad' : pick(['plisse', 'ribbels', 'ringen']),
       texN: rnd(40, 140),
@@ -2273,7 +2600,11 @@ function randomize(): Partial<Params> {
     });
   }
   const hasKap = isPendant && Math.random() < 0.7;
-  if (hasKap) slots.push({ shape: 'kap', kap: pick(KAP_OPTIONS.map((o) => o.value)), D: rnd(160, 260), H: rnd(90, 170), v: rnd(0, 40), n: rnd(3, 6), tex: Math.random() < 0.5 ? 'glad' : 'plisse', texN: rnd(60, 160), color: W });
+  if (hasKap) {
+    const kap = pick(KAP_OPTIONS.map((o) => o.value));
+    const fl = kap === 'geribbeld';
+    slots.push({ shape: 'kap', kap, D: rnd(160, 260), H: rnd(90, 170), v: fl ? rnd(20, 90) : rnd(0, 40), n: fl ? rnd(16, 40) : rnd(3, 6), tex: Math.random() < 0.5 ? 'glad' : 'plisse', texN: rnd(60, 160), color: W, scallop: fl && Math.random() < 0.4 ? rnd(8, 30) : 0 });
+  }
   // sometimes a layered (moiré) shade
   const layered: Partial<Params> = { layers: '1', kl1Pat: 'segment' };
   if (hasKap && Math.random() < 0.4) {
@@ -2293,6 +2624,8 @@ function randomize(): Partial<Params> {
   return {
     ...layered,
     closed,
+    closedShape: Math.random() < 0.3 ? 'binnen' : 'spiegel',
+    vent: pick(['verborgen', 'verborgen', 'gaatjes']),
     lampType: isPendant ? 'pendant' : 'table',
     socket: 'e27',
     bulb27: isPendant ? pick(['a60', 'g95', 'st64']) : pick(['g95', 'g125', 'g80']),

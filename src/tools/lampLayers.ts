@@ -51,6 +51,8 @@ export interface LayerSpec {
   /** Length of an inner layer relative to the open depth of the outer one. */
   len: number;
   color: string;
+  /** Inner layers: 'helder' (translucent) or 'mat' (opaque, the light only comes out below). */
+  mat: string;
 }
 
 export interface LayerSetup {
@@ -128,6 +130,14 @@ export function layerParams(kapOn: (p: Params) => boolean): ParamDef[] {
           help: 'Lengte t.o.v. de buitenste kap: korter blijft binnen, langer steekt eruit.',
         },
         { type: 'select', key: k(i, 'Color'), label: 'Kleur', options: COLOR_OPTIONS, default: '#f2efe8', show: on },
+        {
+          type: 'select', key: k(i, 'Mat'), label: 'Materiaal', default: 'helder', show: on,
+          options: [
+            { value: 'helder', label: 'Doorschijnend' },
+            { value: 'mat', label: 'Dekkend (licht alleen onderuit)' },
+          ],
+          help: 'Dekkend: een gekleurde binnenkap (PETG, niet doorschijnend) in een doorschijnende buitenkap, zoals een kap in een geribbelde glazen koker.',
+        },
       );
     }
   }
@@ -153,6 +163,7 @@ export function layersOf(p: Params, kapColor: string): LayerSetup {
       holes: typeof p[k(i, 'Holes')] === 'boolean' ? bool(p, k(i, 'Holes')) : false,
       len: clamp(v('Len', d.len), 30, 150) / 100,
       color: i === 1 ? kapColor : typeof p[k(i, 'Color')] === 'string' ? str(p, k(i, 'Color')) : '#f2efe8',
+      mat: i > 1 && p[k(i, 'Mat')] === 'mat' ? 'mat' : 'helder',
     });
   }
   return { count, gap: clamp(typeof p.layerGap === 'number' ? num(p, 'layerGap') : 6, 2, 20), specs };

@@ -53,7 +53,9 @@ export function selSubtitle(s: Sel, p: Params): string {
     case 'layers':
       return `${p.layers ?? 1} ${String(p.layers) === '1' ? 'laag' : 'lagen'}`;
     case 'closed':
-      return p.closed === true ? `tweede kap · ${p.centerBulb === false ? 'naad vrij' : 'lamp in het midden'}` : 'uit';
+      return p.closed === true
+        ? `${p.closedShape === 'binnen' ? `opening Ø${p.closedOpen ?? 100}` : 'tweede kap'} · ${p.centerBulb === false ? 'naad vrij' : 'lamp in het midden'} · ${p.vent === 'gaatjes' ? 'gaatjes' : p.vent === 'geen' ? 'geen ventilatie' : 'verborgen ventilatie'}`
+        : 'uit';
     case 'tube':
       return !isPrintedTube(p)
         ? 'M10 draadbuis (gekocht)'

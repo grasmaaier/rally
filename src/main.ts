@@ -231,7 +231,7 @@ function filamentOf(p: PartResult, parts: PartResult[]): { f: ResolvedFilament; 
 }
 
 function lookOf(f: ResolvedFilament): PartLook {
-  return { color: f.color.hex, translucent: isTranslucent(f), clear: !!f.color.clear };
+  return { color: f.color.hex, translucent: isTranslucent(f), clear: !!f.color.clear, matte: /matte/.test(f.line.id) };
 }
 
 function currentList(): ShoppingList | null {
