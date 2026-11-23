@@ -812,7 +812,7 @@ function holeCutters(M: ManifoldToplevel, L: WallLayout, zLo: number, zHi: numbe
   let ps = h.ps;
   let pz = h.pz;
   const est = ((s1 - s0) / ps + 1) * ((z1 - z0) / pz + 1);
-  const MAX = 1400;
+  const MAX = 900;
   if (est > MAX) {
     const k = Math.sqrt(est / MAX);
     ps *= k;
@@ -1307,7 +1307,7 @@ function assembly(L: WallLayout, m10: boolean, reachable: boolean): string {
   steps.push(`${n()}Zet de groep uit in de meterkast en controleer met een spanningzoeker dat de draden spanningsloos zijn.`);
   steps.push(`${n()}${m10 ? 'Steek de M10-nippel van de fitting door het gat van de houder en draai de moer vast' : 'Schroef de fitting met 2 schroeven M3 op de houder'}. Haal de draden van de fitting door het ronde gat in de muurplaat en zet ze in de holte vast met een kabelbinder door het tunneltje.`);
   steps.push(`${n()}Verbind de draden met de Wago-klemmen: bruin (fase, via de schakelaar) en blauw (nul). Een aardedraad gaat apart in een eigen klem (klasse II, niet aansluiten). Duw de klemmen in de doos of de holte.`);
-  steps.push(`${n()}${L.keyholes ? 'Hang de plaat met de sleutelgaten op de schroeven in de pluggen en schroef' : 'Schroef'} de muurplaat met 2 dozenschroeven M3,5 vast op de schroefpotjes van de inbouwdoos${L.plugHoles.length && !L.keyholes ? ' en zet hem extra vast met de pluggen' : ''}. "Onder" is de kant met de ${L.dir === 'down' ? 'smalle' : ''}borgschroefgaten in de zijkant — de plaat werkt beide kanten op.`);
+  steps.push(`${n()}${L.keyholes ? 'Hang de plaat met de sleutelgaten op de schroeven in de pluggen en schroef' : 'Schroef'} de muurplaat met de brede kant naar voren en 2 dozenschroeven M3,5 vast op de schroefpotjes van de inbouwdoos${L.plugHoles.length && !L.keyholes ? ' en zet hem extra vast met de pluggen' : ''}. ${L.keyholes ? 'De sleutelgaten wijzen omhoog.' : 'Boven of onder maakt niet uit: de plaat heeft aan beide kanten gaten voor de borgschroeven.'}`);
   steps.push(`${n()}Schroef de houder met 2 schroeven op de muurplaat en draai de G9 LED-lamp in de fitting.`);
   steps.push(`${n()}Schuif de kap van ${L.dir === 'down' ? 'boven' : 'onder'} over de muurplaat: de lippen aan de binnenkant haken achter de zijkanten van de plaat. Schuif door tot de kap tegen de plaat stopt.`);
   steps.push(`${n()}Draai de 2 borgschroeven M3 ${L.dir === 'down' ? 'van boven' : 'van onder'} door de kap in de muurplaat. ${L.reflector ? `Hang de reflector met zijn randje in de ${far} van de kap.` : ''}`.trim());
