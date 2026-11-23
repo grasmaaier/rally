@@ -20,8 +20,8 @@ import {
  *
  * - Muurplaat: a shallow tray screwed to the box, open towards the wall (the
  *   box and the tray hold the Wago connectors).
- * - Kap: an extruded outline. Two L-shaped channels (rib + lip) hook around the
- *   side edges of the plate, so it cannot come off the wall; the housing slides
+ * - Kap: an extruded outline. Two channels (rib + lip) hook behind the front
+ *   flange of the plate, so it cannot come off the wall; the housing slides
  *   over the plate from the open far end until two pillars rest against the
  *   plate, and two countersunk screws through the pillars lock it.
  * - G9-houder: holds the socket so the bulb sits in the middle of the light.
@@ -30,8 +30,15 @@ import {
 // ---------------------------------------------------------------------------
 // Dimensions
 
-/** Channel around the plate edges: clearance, rib, lip and the pillars at the mount end. */
-const CH = { c: 0.4, rib: 3, lipT: 3, lipW: 7, pillarH: 8, pillarIn: 10 };
+/**
+ * Channel around the plate edges. The plate has a rabbet on both sides: its
+ * front flange is full width, the part behind it is `rabbet` narrower on each
+ * side. The housing's lips sit in the rabbets, between the wall and the
+ * flange, so the housing cannot be pulled off the wall; the ribs beside the
+ * flange keep it from moving sideways. Pillars at the mount end carry the
+ * plate and take the lock screws.
+ */
+const CH = { c: 0.4, rib: 3, rabbet: 6, flange: 5, pillarH: 8 };
 /** Wall plate: front skin, rim, corner blocks for the lock screws, boss radii. */
 const PLATE = { front: 3, rim: 3, r: 1.5, cornerW: 10, cornerH: 13, bossBox: 4.5, bossBr: 4, bossPlug: 5, lead: 4.5 };
 const FLANGE_T = 1.8;
@@ -42,6 +49,8 @@ const BR = { t: 5, base: 5, len: 32 };
 /** Smallest distance from the bulb glass to any printed part. */
 const CLEAR = 10;
 const WHITE = '#f2efe8';
+/** The back of the plate (6 mm narrower each side) must cover the Ø68 hole with its rim. */
+const PLATE_MIN_W = 92;
 
 type Dir = 'both' | 'up' | 'down';
 
@@ -134,7 +143,7 @@ const params: ParamDef[] = [
       { value: 'sleutelgaten', label: '2 sleutelgaten (ophangen)' },
     ],
   },
-  { type: 'number', key: 'plateW', label: 'Breedte muurplaat', min: 80, max: 160, step: 1, unit: 'mm', default: 88, help: 'Minstens 80 mm: de plaat dekt het gat van Ø68 af.' },
+  { type: 'number', key: 'plateW', label: 'Breedte muurplaat', min: 92, max: 160, step: 1, unit: 'mm', default: 96, help: 'De achterkant is aan elke kant 6 mm smaller (daar haakt de kap achter) en dekt het gat van Ø68 af.' },
   { type: 'number', key: 'plateH', label: 'Hoogte muurplaat', min: 80, max: 200, step: 1, unit: 'mm', default: 88 },
   { type: 'number', key: 'plateT', label: 'Dikte muurplaat', min: 14, max: 26, step: 1, unit: 'mm', default: 16, help: 'De holte erachter (dikte − 3 mm) heeft ruimte voor de Wago-klemmen.' },
 
@@ -230,9 +239,12 @@ interface Hole2 {
 /** Keeps holes on the plate apart and away from the rim, corners and lips. */
 class Planner {
   taken: Hole2[] = [];
+  /** Solid blocks (x0, x1, z0, z1) a hole may not reach into. */
+  blocks: [number, number, number, number][] = [];
   constructor(private xMax: number, private z0: number, private z1: number) {}
   ok(x: number, z: number, r: number, margin = 1): boolean {
     if (Math.abs(x) > this.xMax - r || z < this.z0 + r || z > this.z1 - r) return false;
+    for (const [a, b, c, d] of this.blocks) if (Math.hypot(Math.max(a - x, 0, x - b), Math.max(c - z, 0, z - d)) < r + margin) return false;
     return this.taken.every((h) => Math.hypot(h.x - x, h.z - z) >= h.r + r + margin);
   }
   add(x: number, z: number, r: number) {
@@ -245,6 +257,7 @@ class Planner {
   clone(): Planner {
     const q = new Planner(this.xMax, this.z0, this.z1);
     q.taken = [...this.taken];
+    q.blocks = this.blocks;
     return q;
   }
 }
@@ -342,7 +355,7 @@ export function wallLayout(p: Params, M: ManifoldToplevel, printer: PrinterProfi
 
   // plate
   const Tp = clamp(num(p, 'plateT') || 16, 14, 26);
-  let Wp = clamp(num(p, 'plateW') || 88, 80, 200);
+  let Wp = clamp(num(p, 'plateW') || 96, PLATE_MIN_W, 200);
   let Hp = clamp(num(p, 'plateH') || 88, 80, 260);
   const z0 = CH.pillarH;
   if (Hp > H - z0 - 1) {
@@ -352,7 +365,8 @@ export function wallLayout(p: Params, M: ManifoldToplevel, printer: PrinterProfi
     Hp = fit;
   }
   const zb = z0 + Hp / 2;
-  const yb = Tp + CH.c + CH.lipT;
+  /** Front of the ribs: everything behind this belongs to the attachment. */
+  const yb = Tp + CH.c + 1;
 
   // walls: smooth base, relief on the outside, uniform wall
   const pattern = str(p, 'pattern');
@@ -369,9 +383,9 @@ export function wallLayout(p: Params, M: ManifoldToplevel, printer: PrinterProfi
     rect(M, -w / 2 - CH.c - CH.rib, w / 2 + CH.c + CH.rib, 0, yb).subtract(baseCS).area() < 0.5;
   if (!fits(Wp)) {
     let w = Wp;
-    while (w > 80 && !fits(w)) w = Math.max(80, w - 2);
+    while (w > PLATE_MIN_W && !fits(w)) w = Math.max(PLATE_MIN_W, w - 2);
     if (!fits(w)) {
-      throw new UserError(`De muurplaat (minstens 80 mm breed, ${mm(Tp)} mm dik) past niet in deze kap: de achterkant van de kap is maar ${mm(2 * outline.xb)} mm breed. Maak de lamp breder of dieper, of de plaat dunner.`);
+      throw new UserError(`De muurplaat (minstens ${PLATE_MIN_W} mm breed, ${mm(Tp)} mm dik) past niet in deze kap: de achterkant van de kap is maar ${mm(2 * outline.xb)} mm breed. Maak de lamp breder of dieper, of de plaat dunner.`);
     }
     notes.push(`Muurplaat smaller gemaakt: ${mm(w)} mm (past anders niet in de kap).`);
     Wp = w;
@@ -390,8 +404,15 @@ export function wallLayout(p: Params, M: ManifoldToplevel, printer: PrinterProfi
   const floorT = nearClosed ? FLOOR_T : 0;
 
   // plate holes: box screws and plugs
-  const lipEdge = Wp / 2 - CH.lipW;
-  const planner = new Planner(lipEdge - 0.5, z0 + PLATE.rim + 0.5, z0 + Hp - PLATE.rim - 0.5);
+  // holes with bosses go in the cavity, behind the full-depth part of the plate
+  const cavityX = Wp / 2 - CH.rabbet - PLATE.rim;
+  const planner = new Planner(cavityX - 0.5, z0 + PLATE.rim + 0.5, z0 + Hp - PLATE.rim - 0.5);
+  const cx0 = Wp / 2 - CH.rabbet - PLATE.cornerW;
+  for (const [a, b] of [
+    [z0, z0 + PLATE.cornerH],
+    [z0 + Hp - PLATE.cornerH, z0 + Hp],
+  ])
+    planner.blocks.push([-1e3, -cx0, a, b], [cx0, 1e3, a, b]);
   const bs = str(p, 'boxScrews');
   const half = FLUSH_BOX.spacing / 2;
   const boxHoles: [number, number][] = [];
@@ -402,7 +423,8 @@ export function wallLayout(p: Params, M: ManifoldToplevel, printer: PrinterProfi
   const plugHoles: [number, number][] = [];
   const keyholes = plugs === 'sleutelgaten';
   if (plugs === 'schroeven' || keyholes) {
-    const px = lipEdge - 6;
+    // inside the corner blocks of the lock screws, well outside the Ø68 hole
+    const px = Wp / 2 - CH.rabbet - PLATE.cornerW - 5.5;
     const pz = Hp / 2 - 9;
     if (keyholes) plugHoles.push([-px, zb + pz], [px, zb + pz]);
     else plugHoles.push([-px, zb + pz], [px, zb - pz]);
@@ -413,7 +435,10 @@ export function wallLayout(p: Params, M: ManifoldToplevel, printer: PrinterProfi
   }
 
   const ctx: Ctx = { M, baseInner, freeLoop, yb };
-  const bulb = bulbLayout(p, ctx, { H, Wp, Hp, Tp, z0, lipEdge, floorT, dir, planner }, notes);
+  const rimFar = dir === 'down' ? num(p, 'rimBottom') : num(p, 'rimTop');
+  const rimNear = dir === 'both' ? num(p, 'rimBottom') : 0;
+  const rimWant = clamp(Math.max(rimFar || 0, rimNear || 0), 0, 60);
+  const bulb = bulbLayout(p, ctx, { H, Wp, Hp, Tp, z0, face: Wp / 2 - 1, floorT, dir, planner, rim: rimWant }, notes);
 
   // the assembly must stay inside the free space of the housing
   const footCS = M.CrossSection.union(bulb.foot.map(([a, b, c, d]) => rect(M, a, b, c, d)));
@@ -423,8 +448,6 @@ export function wallLayout(p: Params, M: ManifoldToplevel, printer: PrinterProfi
   }
 
   // flanges: never in the way of the bulb (10 mm) or of the assembly while the housing slides on
-  const rimFar = dir === 'down' ? num(p, 'rimBottom') : num(p, 'rimTop');
-  const rimNear = dir === 'both' ? num(p, 'rimBottom') : 0;
   const flangeBase = reflector ? freeCS : baseInner;
   const wallT = reflector ? REFL.t : t;
   const farFw = clampFlange(M, clamp(rimFar || 0, 0, 60), flangeBase, wallT, yb, 'far', H, bulb, footCS);
@@ -465,7 +488,7 @@ export function wallLayout(p: Params, M: ManifoldToplevel, printer: PrinterProfi
 
   return {
     shape, W, D, H, t, translucent, dir, outline, outerLoop, relief: reliefDepth, nearClosed, floorT, nearFw, farFw, window, reflector,
-    plate: { W: Wp, H: Hp, T: Tp, z0, zb }, yb, lockX: Wp / 2 - CH.pillarIn / 2, lockY: Tp / 2, boxHoles, plugHoles, keyholes, bulb, holes, notes, ctx,
+    plate: { W: Wp, H: Hp, T: Tp, z0, zb }, yb, lockX: Wp / 2 - CH.rabbet - PLATE.cornerW / 2, lockY: Tp / 2, boxHoles, plugHoles, keyholes, bulb, holes, notes, ctx,
   };
 }
 
@@ -475,7 +498,10 @@ interface PlateFrame {
   Hp: number;
   Tp: number;
   z0: number;
-  lipEdge: number;
+  /** Half width of the front face available for the bracket. */
+  face: number;
+  /** Rim (flange) width asked for: the layout tries to leave room for it. */
+  rim: number;
   floorT: number;
   dir: Dir;
   planner: Planner;
@@ -496,13 +522,22 @@ function bulbLayout(p: Params, ctx: Ctx, f: PlateFrame, notes: string[]): BulbLa
   const auto = want !== 'staand' && want !== 'liggend';
   const tryVertical = want === 'staand' || (auto && f.dir !== 'both');
   let reason = '';
+  // first with room for the rim that was asked for, then without (the rim is made smaller later)
+  let rim = f.rim;
+  const attempt = (fn: () => BulbLayout | string): BulbLayout | string => {
+    rim = f.rim;
+    const a = fn();
+    if (typeof a !== 'string' || rim <= 0) return a;
+    rim = 0;
+    return fn();
+  };
   if (tryVertical) {
-    const v = vertical();
+    const v = attempt(vertical);
     if (typeof v !== 'string') return v;
     reason = v;
     if (!auto) throw new UserError(v);
   }
-  const s = sideways();
+  const s = attempt(sideways);
   if (typeof s !== 'string') {
     if (reason) notes.push(`Lamp liggend geplaatst: ${reason.charAt(0).toLowerCase()}${reason.slice(1)}`);
     return s;
@@ -513,7 +548,10 @@ function bulbLayout(p: Params, ctx: Ctx, f: PlateFrame, notes: string[]): BulbLa
     const yFront = frontYOver(freeLoop, x0, x1);
     const need = 2 * r + 2 * CLEAR;
     if (!(yFront - yLow >= need)) return `De lamp is te ondiep voor een G9-lamp met ${CLEAR} mm afstand rondom: maak hem ${mm(Math.ceil(need - (yFront - yLow)))} mm dieper (of de muurplaat dunner).`;
-    const yc = (yLow + yFront) / 2;
+    // in the middle, or further back so a rim at the front still keeps its distance
+    const yMinC = yLow + r + CLEAR;
+    const yWant = yFront - rim - Math.max(r + CLEAR, padHalf + 4);
+    const yc = clamp((yLow + yFront) / 2, yMinC, Math.max(yMinC, Math.min(yFront - r - CLEAR, yWant)));
     const yPadF = yc + Math.max(padHalf, r) + 3;
     if (yPadF > frontYOver(freeLoop, x0, x1) - 1) return 'De G9-fitting is te dik voor deze diepte. Maak de lamp dieper.';
     return { yc, yPadF };
@@ -533,13 +571,13 @@ function bulbLayout(p: Params, ctx: Ctx, f: PlateFrame, notes: string[]): BulbLa
     const g = Math.max(0, Math.min(10, sh - CLEAR));
     const lastErr = 'De G9-houder past niet op de muurplaat (botst met de schroefgaten). Kies de andere schroefpotjes van de inbouwdoos of een grotere plaat.';
     for (const xc of [0, 14, -14, 22, -22]) {
-      if (Math.abs(xc) + bw / 2 > f.lipEdge - 1) continue;
+      if (Math.abs(xc) + bw / 2 > f.face) continue;
       const yl = yLayout(xc - bw / 2, xc + bw / 2, Math.max(sd / 2, m10 ? G9_GUIDE.nut.d / 2 : spacing / 2 + 3));
       if (typeof yl === 'string') return yl;
       const { yc, yPadF } = yl;
       const gg = Math.max(0, Math.min(g, yc - sd / 2 - f.Tp - BR.base - 1));
       const [sx0, sx1] = sideXOver(freeLoop, f.Tp, yPadF);
-      if (xc - bw / 2 < sx0 + 1 || xc + bw / 2 > sx1 - 1) continue;
+      if (xc - bw / 2 < sx0 + 1 + rim || xc + bw / 2 > sx1 - 1 - rim) continue;
       const pl = f.planner.clone();
       const zs0 = Math.max(f.z0 + PLATE.rim + 0.5, pad0 - 20);
       const zs1 = Math.min(f.z0 + f.Hp - PLATE.rim - 0.5, pad1 + 26);
@@ -586,7 +624,7 @@ function bulbLayout(p: Params, ctx: Ctx, f: PlateFrame, notes: string[]): BulbLa
     const zcMax = f.z0 + f.Hp - PLATE.rim - 0.5 - bh / 2;
     if (zcMin > zcMax) return 'De muurplaat is te laag voor de G9-houder. Maak de plaat hoger.';
     const zc = clamp(f.H / 2, zcMin, zcMax);
-    const start = Math.max(-f.lipEdge + 12, -(padT + sh + Lg / 2));
+    const start = Math.max(-f.face, -(padT + sh + Lg / 2));
     let err = '';
     for (let shiftX = 0; shiftX <= 30; shiftX += 3) {
       const xp = start + shiftX;
@@ -597,24 +635,25 @@ function bulbLayout(p: Params, ctx: Ctx, f: PlateFrame, notes: string[]): BulbLa
       const { yc, yPadF } = yl;
       const half = Math.max(sd / 2, m10 ? G9_GUIDE.nut.d / 2 : 0);
       const [sx0, sx1] = sideXOver(freeLoop, yc - Math.max(half, r), yc + Math.max(half, r));
-      if (xm + Lg > sx1 - CLEAR) {
+      if (xm + Lg > sx1 - Math.max(CLEAR, rim + 1)) {
         err = `De lamp is te smal voor een liggende G9-lamp met ${CLEAR} mm afstand: maak hem breder of zet de lamp staand.`;
         break;
       }
-      if (nipX < sx0 + 1) {
+      if (nipX < sx0 + 1 + rim) {
         err = 'De lamp is te smal voor de G9-fitting. Maak hem breder.';
         continue;
       }
-      const baseLen = Math.min(BR.len, f.lipEdge - 1 - xp);
+      const baseLen = Math.min(BR.len, f.face - xp);
       if (baseLen < 18) {
         err = 'De muurplaat is te smal voor de G9-houder. Maak de plaat breder.';
         break;
       }
       const g = Math.max(0, Math.min(10, sh - CLEAR, yc - sd / 2 - f.Tp - BR.base - 1, baseLen - padT - 9));
       const pl = f.planner.clone();
-      // lead hole left of the pad, where the wires leave the nipple
+      // lead hole left of the pad, where the wires leave the nipple, or just under/over the bracket
       const leadC: [number, number][] = [];
       for (const dz of [0, 4, -4, 8, -8, 12, -12, 16, -16, 20, -20]) for (const dx of [0, -2, -4, 2]) leadC.push([xp - PLATE.lead - 1.5 + dx, zc + dz]);
+      for (const dx of [4, 10, 16]) for (const sz of [-1, 1]) leadC.push([xp + dx, zc + sz * (bh / 2 + PLATE.lead + 1.5)]);
       const lead = pl.find(leadC, PLATE.lead, 1.5);
       if (!lead) {
         err = 'De G9-houder past niet op de muurplaat (botst met de schroefgaten). Kies de andere schroefpotjes van de inbouwdoos of een grotere plaat.';
@@ -848,14 +887,18 @@ function housingSolid(M: ManifoldToplevel, L: WallLayout, notes: string[]): { so
   if (L.nearFw > 0) fl(L.nearFw, 'near');
   if (L.farFw > 0 && !L.reflector) fl(L.farFw, 'far');
   // channels around the plate edges (rib + lip) and the pillars the plate rests on
+  const lipY = Tp - CH.flange - CH.c;
+  const back = Wp / 2 - CH.rabbet + CH.c;
   for (const s of [-1, 1]) {
     const a = Wp / 2 + CH.c;
-    const ribLip = M.CrossSection.union([rect(M, s * a, s * (a + CH.rib), 0, yb), rect(M, s * (Wp / 2 - CH.lipW), s * (a + CH.rib), Tp + CH.c, yb)]);
+    // rib beside the flange, lip in the rabbet behind it
+    const ribLip = M.CrossSection.union([rect(M, s * a, s * (a + CH.rib), 0, yb), rect(M, s * back, s * a, 0, lipY)]);
     pieces.push(ribLip.extrude(H));
-    pieces.push(rect(M, s * (Wp / 2 - CH.pillarIn), s * (a + CH.rib), 0, yb).extrude(CH.pillarH));
+    pieces.push(rect(M, s * (Wp / 2 - CH.rabbet - PLATE.cornerW), s * (a + CH.rib), 0, yb).extrude(CH.pillarH));
   }
   let solid = M.Manifold.union(pieces);
-  const cut: Manifold[] = [box(M, -Wp / 2 - CH.c, Wp / 2 + CH.c, -1, Tp + CH.c, CH.pillarH, H + 1)];
+  // room for the plate from the pillars to the far end (it slides in from there)
+  const cut: Manifold[] = [box(M, -Wp / 2 - CH.c, Wp / 2 + CH.c, lipY, Tp + CH.c, CH.pillarH, H + 1), box(M, -back, back, -1, lipY + 0.01, CH.pillarH, H + 1)];
   for (const s of [-1, 1]) {
     const x = s * L.lockX;
     cut.push(M.Manifold.cylinder(CH.pillarH + 2, LOCK.clear / 2, LOCK.clear / 2, 24).translate([x, L.lockY, -1]));
@@ -911,15 +954,17 @@ function plateSolid(M: ManifoldToplevel, L: WallLayout): Manifold {
   const Y = (z: number) => z - zb;
   const add: Manifold[] = [];
   const cut: Manifold[] = [];
-  const slab = cs(M, [roundRect(Wp, Hp, PLATE.r)]).extrude(Tp);
-  const cavity = cs(M, [roundRect(Wp - 2 * PLATE.rim, Hp - 2 * PLATE.rim, 1)]).extrude(Tp).translate([0, 0, fT]);
+  // full-width front flange, narrower behind it (the rabbets take the lips of the housing)
+  const backW = Wp - 2 * CH.rabbet;
+  const slab = M.Manifold.union([cs(M, [roundRect(Wp, Hp, PLATE.r)]).extrude(CH.flange), cs(M, [roundRect(backW, Hp, PLATE.r)]).extrude(Tp)]);
+  const cavity = cs(M, [roundRect(backW - 2 * PLATE.rim, Hp - 2 * PLATE.rim, 1)]).extrude(Tp).translate([0, 0, fT]);
   const boss = (x: number, z: number, r: number) => add.push(M.Manifold.cylinder(Tp - fT + 0.01, r, r, 32).translate([x, Y(z), fT - 0.01]));
   // corner blocks take the lock screws (in from the bottom and the top edge)
   for (const sx of [-1, 1])
     for (const sy of [-1, 1]) {
-      const x0 = sx * (Wp / 2 - PLATE.cornerW);
+      const x0 = sx * (backW / 2 - PLATE.cornerW);
       const y0 = sy * (Hp / 2 - PLATE.cornerH);
-      add.push(box(M, x0, sx * Wp / 2 * 0.999, y0, sy * Hp / 2 * 0.999, fT - 0.01, Tp));
+      add.push(box(M, x0, sx * (backW / 2 - 0.5), y0, sy * (Hp / 2 - 0.5), fT - 0.01, Tp));
       cut.push(tearHole(M, LOCK.pilot / 2, 2 * 12, [sx * L.lockX, sy * Hp / 2, Tp - L.lockY], [0, 1, 0], [0, 0, 1]));
     }
   const sink = (d: number, clear: number, x: number, z: number) => {
@@ -1145,7 +1190,7 @@ function build(p: Params, { M, printer }: Parameters<ToolDef['build']>[1]): Buil
   // ghosts: wall, flush box, Wago connectors, socket, bulb
   const toWorld = (m: Manifold) => m.transform(asMat4(F2W));
   const zWorld = (z: number) => (dir === 'down' ? H - z : z);
-  scene.push({ kind: 'box', size: [W + 120, 6, H + 120], position: [-W / 2 - 60, 0, -60], color: '#d8d2c8', material: 'ghost', label: 'Muur' });
+  scene.push({ kind: 'box', size: [W + 60, 6, H + 60], position: [-W / 2 - 30, 0, -30], color: '#d8d2c8', material: 'ghost', label: 'Muur' });
   const boxCyl = M.Manifold.cylinder(FLUSH_BOX.depth, FLUSH_BOX.holeD / 2, FLUSH_BOX.holeD / 2, 64).transform(asMat4(rotX(-90))).translate([0, 0.5, zWorld(zb)]);
   scene.push({ kind: 'mesh', mesh: meshOf(boxCyl), color: '#8a8f98', material: 'ghost', label: 'Inbouwdoos Ø68' });
   for (const dx of [-21, 0, 21]) {
@@ -1168,7 +1213,7 @@ function build(p: Params, { M, printer }: Parameters<ToolDef['build']>[1]): Buil
     ['Afstand lamp – kunststof', `${mm(Math.min(gap, CLEAR + 5), 1)} mm${gap >= CLEAR + 5 ? ' of meer' : ''} (tot ${gapTo}; minimaal ${CLEAR} mm)`],
     ['Wand', `${mm(L.t, 1)} mm${L.translucent ? ' doorschijnend' : ''}${L.relief > 0 ? `, ${str(p, 'pattern') === 'plisse' ? 'plissé' : 'ribbels'} ${mm(L.relief, 1)} mm diep` : ''}${L.holes ? `, ${housing.holes} gaatjes (brug ≥ ${mm(L.holes.web, 1)} mm)` : ''}`],
     ['Inbouwdoos', `hart ${mm(boxFromBottom)} mm boven de onderkant van de kap, midden van de breedte`],
-    ['Muurplaat', `${mm(Wp)} × ${mm(Hp)} × ${mm(Tp)} mm, holte ${mm(Wp - 2 * PLATE.rim)} × ${mm(Hp - 2 * PLATE.rim)} × ${mm(Tp - PLATE.front)} mm`],
+    ['Muurplaat', `${mm(Wp)} × ${mm(Hp)} × ${mm(Tp)} mm, holte ${mm(Wp - 2 * CH.rabbet - 2 * PLATE.rim)} × ${mm(Hp - 2 * PLATE.rim)} × ${mm(Tp - PLATE.front)} mm`],
     ['Lamp wisselen', opening >= 40 ? `via de ${dir === 'down' ? 'onderkant' : 'bovenkant'} (opening ≈ ${mm(opening)} mm rond de lamp)` : 'borgschroeven los en de kap eraf schuiven'],
   ];
   const info: InfoBlock[] = [{ kind: 'kv', title: 'Wandlamp', rows: kv }];
