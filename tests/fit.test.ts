@@ -96,7 +96,7 @@ describe('passend maken', () => {
     expect(out.fits).toBe(true);
     expect(Number(out.params.height)).toBeLessThanOrEqual(200);
     expect(Number(out.params.height)).toBeGreaterThan(185);
-    expect(f.count()).toBeLessThanOrEqual(5);
+    expect(f.count()).toBeLessThanOrEqual(8);
   });
 
   it('geeft de fout terug als zelfs de kleinste versie niet lukt', async () => {

@@ -583,7 +583,8 @@ function build(p: Params, { M, printer }: Parameters<ToolDef['build']>[1]): Buil
 }
 
 const units = (key: string, label: string, def: number, max: number, show?: (p: Params) => boolean) =>
-  ({ type: 'number', key, label, min: 1, max, step: 1, default: def, show }) as const;
+  // whole grid cells: shrinking to fit a printer drops cells
+  ({ type: 'number', key, label, min: 1, max, step: 1, default: def, show, scale: true }) as const;
 
 const isBin = (p: Params) => str(p, 'mode') === 'bin';
 const isDrawer = (p: Params) => str(p, 'mode') === 'drawer';
@@ -609,7 +610,7 @@ export const gridfinityTool: ToolDef = {
     { type: 'group', label: 'Afmeting', show: (p) => !isDrawer(p) && !isWall(p) },
     units('ux', 'Breedte (vakken)', 2, 7, (p) => !isDrawer(p) && !isWall(p)),
     units('uy', 'Diepte (vakken)', 1, 7, (p) => !isDrawer(p) && !isWall(p)),
-    { type: 'number', key: 'uz', label: 'Hoogte (× 7 mm)', min: 2, max: 40, step: 1, default: 6, show: isBin },
+    { type: 'number', key: 'uz', label: 'Hoogte (× 7 mm)', min: 2, max: 40, step: 1, default: 6, show: isBin, scale: true },
     { type: 'group', label: 'Indeling', show: isBin },
     { type: 'number', key: 'divX', label: 'Vakken in breedte', min: 1, max: 10, step: 1, default: 2, show: isBin },
     { type: 'number', key: 'divY', label: 'Vakken in diepte', min: 1, max: 10, step: 1, default: 1, show: isBin },
