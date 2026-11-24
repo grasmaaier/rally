@@ -17,7 +17,8 @@ import {
   type ResolvedFilament,
   type ShoppingList,
 } from './core/filaments';
-import { GeometryClient } from './core/client';
+import { GeometryClient, type FitBuild } from './core/client';
+import { percent } from './core/fit';
 import { arrange, plateOffset } from './core/layout';
 import { build3MF, buildSTL, download, slug, type ExportObject } from './core/export';
 import { Viewer, type PartLook, type ViewMode } from './ui/viewer';
@@ -147,6 +148,8 @@ function persist() {
 // Building
 
 let token = 0;
+/** The next build may shrink the design to fit the printer (after a preset, "Verras me" or a printer change). */
+let adaptNext: 'preset' | 'random' | 'printer' | null = null;
 let inFlight = false;
 let queued = false;
 let debounce: number | undefined;
@@ -165,10 +168,15 @@ async function runBuild() {
   const my = token;
   const tool = state.tool;
   const params = { ...state.params };
+  const adapt = adaptNext;
+  adaptNext = null;
+  const printer = state.printer;
   $('#busy').hidden = false;
   try {
-    const res = await client.build(tool.id, params, state.printer);
+    const res: FitBuild = adapt ? await client.fit(tool.id, params, printer) : await client.build(tool.id, params, printer);
     if (my === token) {
+      // the user may have changed something meanwhile: then the queued build takes over
+      if (res.fit && sameParams(params, state.params) && printer === state.printer) adapted(adapt!, params, res.fit.params, res.fit.factor, res.fit.fits);
       const prev = state.result;
       state.result = res;
       // a design that asks for another view (e.g. the lamp's fit test: the print plate) switches to it once
@@ -191,6 +199,68 @@ async function runBuild() {
       queued = false;
       runBuild();
     }
+  }
+}
+
+function sameParams(a: Params, b: Params) {
+  const keys = new Set([...Object.keys(a), ...Object.keys(b)]);
+  for (const k of keys) if (a[k] !== b[k]) return false;
+  return true;
+}
+
+const printerShort = (p: PrinterProfile) => p.name.replace(/^Bambu Lab /, '');
+
+/** Take over the parameters a fitted build used and tell the user. */
+function adapted(reason: 'preset' | 'random' | 'printer', asked: Params, used: Params, factor: number, fits: boolean) {
+  const name = printerShort(state.printer);
+  if (!fits) {
+    showFitNote(`Dit ontwerp past ook verkleind niet op de ${name}. Maak het kleiner of kies een grotere printer.`, null);
+    return;
+  }
+  if (factor >= 1) {
+    if (reason !== 'printer') showFitNote(null, null);
+    return;
+  }
+  state.params = { ...used };
+  // a preset or surprise becomes one undo step; a printer change gets its own
+  if (reason === 'printer') {
+    hist.record({ ...used }, null);
+    hist.seal();
+  } else hist.amend({ ...used });
+  form?.sync(state.params);
+  designer?.refresh();
+  persist();
+  updateUndo();
+  const msg = `Verkleind tot ${percent(factor)} zodat het op de ${name} past`;
+  showFitNote(msg, asked);
+  toast(msg);
+}
+
+/** The menu keeps its value empty (so every example, also the same one again, can be picked) and names the last pick. */
+function showPresetName(name: string | null) {
+  const first = $<HTMLSelectElement>('#presets').options[0];
+  if (first) first.textContent = name ? `Voorbeeld: ${name}` : 'Voorbeelden…';
+}
+
+function showFitNote(msg: string | null, original: Params | null) {
+  const el = $('#fit-note');
+  el.hidden = !msg;
+  el.innerHTML = '';
+  if (!msg) return;
+  const span = document.createElement('span');
+  span.textContent = msg;
+  el.append(span);
+  if (original) {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'ghost small';
+    b.textContent = 'Oorspronkelijke maten';
+    b.title = 'Zet de maten terug zoals ze waren (past dan niet op deze printer)';
+    b.addEventListener('click', () => {
+      showFitNote(null, null);
+      applyParams({ ...original }, null, true);
+    });
+    el.append(b);
   }
 }
 
@@ -735,7 +805,11 @@ function updateUndo() {
   $<HTMLButtonElement>('#redo').disabled = !hist.canRedo;
 }
 
-const phone = () => window.matchMedia('(max-width: 700px)').matches;
+/** Phone in landscape: model on the left, one scrolling side column (styles.css). */
+const landscape = () => window.matchMedia('(orientation: landscape) and (max-height: 500px)').matches;
+const phone = () => window.matchMedia('(max-width: 700px)').matches && !landscape();
+/** The last tap was in the side column (outliner, settings), not on the model. */
+let tapInSide = false;
 
 function setSheet(open: boolean) {
   document.body.classList.toggle('sheet-open', open);
@@ -790,6 +864,8 @@ function mountDesigner(tool: ToolDef) {
       onSelect: () => {
         setRightTab('inspect');
         if (phone()) setSheet(true);
+        // picked on the model: bring its properties into view in the side column
+        else if (landscape() && !tapInSide) $('#right-tabs').scrollIntoView({ block: 'start', behavior: 'smooth' });
       },
     },
     { outliner: $('#outliner'), inspector: $('#inspector'), nodeview: $('#nodeview'), gizmo: document.querySelector<SVGSVGElement>('#gizmo')! },
@@ -810,6 +886,8 @@ function selectTool(tool: ToolDef, params?: Params) {
   const presets = $<HTMLSelectElement>('#presets');
   presets.innerHTML = '<option value="">Voorbeelden…</option>' + (tool.presets ?? []).map((p, i) => `<option value="${i}">${escapeHtml(p.name)}</option>`).join('');
   $('#random').hidden = !tool.randomize;
+  adaptNext = null;
+  showFitNote(null, null);
   form = buildForm($('#form'), tool.params, state.params, onParam, fileHooks);
   hist.reset({ ...state.params });
   mountDesigner(tool);
@@ -911,6 +989,8 @@ function setupChrome() {
     state.printer = printerById(printer.value);
     store.set('printer', state.printer.id);
     printerTitle();
+    // a design that does not fit the new printer is shrunk (with a note and a way back)
+    adaptNext = 'printer';
     scheduleBuild();
   });
 
@@ -919,13 +999,20 @@ function setupChrome() {
     const preset = state.tool.presets?.[Number(sel.value)];
     sel.value = '';
     if (!preset) return;
+    showPresetName(preset.name);
+    adaptNext = 'preset';
     applyParams({ ...defaultsOf(state.tool.params), ...preset.values } as Params, null, true);
   });
   $('#random').addEventListener('click', () => {
     if (!state.tool.randomize) return;
+    showPresetName(null);
+    adaptNext = 'random';
     applyParams({ ...state.params, ...state.tool.randomize(state.params) } as Params, null, true);
   });
   $('#reset').addEventListener('click', () => {
+    showPresetName(null);
+    showFitNote(null, null);
+    adaptNext = 'preset';
     applyParams(defaultsOf(state.tool.params), null, true);
   });
   $('#share').addEventListener('click', () => shareLink($('#share')));
@@ -936,6 +1023,21 @@ function setupChrome() {
   $('#redo').innerHTML = icon('redo');
   $('#lib-open').innerHTML = `${icon('library')}<span>Bibliotheek</span>`;
   $('#share-top').innerHTML = `${icon('share')}<span>Delen</span>`;
+  $('#presets-jump').innerHTML = `${icon('examples')}<span>Voorbeelden</span>`;
+  // on a phone the examples menu can be scrolled away or sit under the sheet: one tap brings it back
+  $('#presets-jump').addEventListener('click', () => {
+    const sel = $<HTMLSelectElement>('#presets');
+    if (designer) setSheet(false);
+    // the menu sits near the top of the settings (below the pinned 3D view on a phone)
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+    document.querySelector('.layout')?.scrollTo({ top: 0, behavior: 'smooth' });
+    sel.focus({ preventScroll: true });
+    try {
+      (sel as HTMLSelectElement & { showPicker?: () => void }).showPicker?.();
+    } catch {
+      // not allowed here: the focused menu is in view, one more tap opens it
+    }
+  });
   $('#undo').addEventListener('click', undo);
   $('#redo').addEventListener('click', redo);
   $('#lib-open').addEventListener('click', () =>
@@ -990,6 +1092,11 @@ function setupChrome() {
   for (const b of document.querySelectorAll<HTMLButtonElement>('#stage-tabs button')) b.addEventListener('click', () => setStageTab(b.dataset.tab as '3d' | 'nodes'));
   $('#back-to-stack').addEventListener('click', () => showAllSettings(false));
   $('#sheet-handle').addEventListener('click', () => setSheet(!document.body.classList.contains('sheet-open')));
+  // tapping the settings above the bottom sheet (examples, stack) folds the sheet away
+  $('.params').addEventListener('pointerdown', () => {
+    if (designer && phone()) setSheet(false);
+  });
+  window.addEventListener('pointerdown', (e) => (tapInSide = !!(e.target as HTMLElement).closest?.('.panel')), true);
 
   for (const b of document.querySelectorAll<HTMLButtonElement>('#view-toggle button')) {
     b.addEventListener('click', () => {

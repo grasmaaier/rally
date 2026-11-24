@@ -45,6 +45,12 @@ export class History<T> {
     this.openKey = null;
   }
 
+  /** Change the present in place: no new undo step (e.g. a preset adapted to the printer). */
+  amend(state: T) {
+    this.present = state;
+    this.future = [];
+  }
+
   /** Replace the present without an undo step (e.g. loading a tool). */
   reset(state: T) {
     this.past = [];

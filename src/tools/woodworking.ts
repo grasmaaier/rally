@@ -1175,7 +1175,7 @@ export const woodworkingTool: ToolDef = {
     { type: 'number', key: 'dwBushOD', label: 'Buitenmaat boorbus', min: 6, max: 20, step: 0.5, unit: 'mm', default: 12, show: (p) => is('dowel')(p) && bool(p, 'dwBush') },
 
     { type: 'group', label: 'Gaatjesmal', show: is('shelf') },
-    { type: 'number', key: 'spHoles', label: 'Aantal gaten', min: 2, max: 12, step: 1, default: 7, show: is('shelf') },
+    { type: 'number', key: 'spHoles', label: 'Aantal gaten', min: 2, max: 12, step: 1, default: 7, show: is('shelf'), scale: true },
     { type: 'number', key: 'spPitch', label: 'Gatafstand', min: 16, max: 64, step: 1, unit: 'mm', default: 32, show: is('shelf') },
     { type: 'number', key: 'spOffset', label: 'Afstand tot de voorkant', min: 15, max: 100, step: 0.5, unit: 'mm', default: 37, show: is('shelf') },
     { type: 'number', key: 'spHoleD', label: 'Boormaat', min: 3, max: 10, step: 0.5, unit: 'mm', default: 5, show: is('shelf') },

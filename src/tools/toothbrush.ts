@@ -846,7 +846,7 @@ export const toothbrushTool: ToolDef = {
     { type: 'number', key: 'chargerD', label: 'Oplader Ø', min: 40, max: 80, step: 0.5, unit: 'mm', default: 58, show: anyBrand('custom') },
     { type: 'number', key: 'chargerH', label: 'Oplader hoogte', min: 6, max: 45, step: 0.5, unit: 'mm', default: 24, show: anyBrand('custom') },
     { type: 'group', label: 'Opzetborstels & tandpasta', show: isHolder },
-    { type: 'number', key: 'heads', label: 'Reserve opzetborstels', min: 0, max: 6, step: 1, default: 0, show: isHolder },
+    { type: 'number', key: 'heads', label: 'Reserve opzetborstels', min: 0, max: 6, step: 1, default: 0, show: isHolder, scale: true },
     {
       type: 'select', key: 'headStore', label: 'Bewaren op', default: 'pegs', show: (p) => isHolder(p) && num(p, 'heads') > 0,
       options: [

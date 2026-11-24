@@ -1384,7 +1384,7 @@ export const SPEAKER_PARAMS: ParamDef[] = [
   { type: 'number', key: 'pan', label: 'Voorbeeld: draaien', min: -90, max: 90, step: 5, unit: '°', default: 25 },
   { type: 'number', key: 'tilt', label: 'Voorbeeld: kantelen', min: -45, max: 30, step: 5, unit: '°', default: -10, show: isArm, help: 'Min = omlaag gericht.' },
   { type: 'group', label: 'Muurplaat & arm', show: isArm },
-  { type: 'number', key: 'armLen', label: 'Armlengte (muur tot draaipunt)', min: 30, max: 250, step: 5, unit: 'mm', default: 90, show: isArm },
+  { type: 'number', key: 'armLen', label: 'Armlengte (muur tot draaipunt)', min: 30, max: 250, step: 5, unit: 'mm', default: 90, show: isArm, scale: true },
   { type: 'number', key: 'armW', label: 'Breedte arm', min: 30, max: 44, step: 1, unit: 'mm', default: 34, show: isArm },
   { type: 'number', key: 'armH', label: 'Hoogte arm', min: 18, max: 36, step: 1, unit: 'mm', default: 22, show: isArm },
   { type: 'number', key: 'screws', label: 'Aantal schroeven', min: 2, max: 3, step: 1, default: 2, show: isArm },

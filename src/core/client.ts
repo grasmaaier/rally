@@ -1,8 +1,16 @@
-import type { BuildResult, MeshAsset, Params, PrinterProfile, ShapeAsset } from './types';
+import { UserError, type BuildResult, type MeshAsset, type Params, type PrinterProfile, type ShapeAsset } from './types';
 
-type Pending = { resolve: (r: BuildResult) => void; reject: (e: Error) => void };
+/** A build adapted to the printer: the (possibly shrunk) parameters it was built with. */
+export interface FitInfo {
+  params: Params;
+  factor: number;
+  fits: boolean;
+}
+export type FitBuild = BuildResult & { fit?: FitInfo };
+
+type Pending = { resolve: (r: FitBuild) => void; reject: (e: Error) => void };
 type Upload = { type: 'font'; key: string; bytes: ArrayBuffer } | { type: 'shape'; key: string; shape: ShapeAsset } | { type: 'mesh'; key: string; mesh: MeshAsset };
-type Runner = (tool: string, params: Params, printer: PrinterProfile) => Promise<BuildResult>;
+type Runner = (tool: string, params: Params, printer: PrinterProfile, fit: boolean) => Promise<FitBuild>;
 
 /**
  * Talks to the geometry worker. Falls back to building on the main thread
@@ -24,7 +32,7 @@ export class GeometryClient {
     try {
       const w = new Worker(new URL('./worker.ts', import.meta.url), { type: 'module' });
       w.onmessage = (e) => {
-        const { id, ok, result, error, fatal } = e.data;
+        const { id, ok, result, fit, error, fatal } = e.data;
         const p = this.pending.get(id);
         if (fatal) {
           // the geometry kernel crashed (e.g. out of memory): start over with a fresh one
@@ -33,7 +41,7 @@ export class GeometryClient {
         }
         if (!p) return;
         this.pending.delete(id);
-        if (ok) p.resolve(result as BuildResult);
+        if (ok) p.resolve(fit ? { ...(result as BuildResult), fit: fit as FitInfo } : (result as BuildResult));
         else p.reject(new Error(fatal ? `Dit ontwerp is te zwaar of ongeldig voor de rekenkern (${error}). Probeer minder detail of andere maten.` : error));
       };
       w.onerror = (e) => {
@@ -68,24 +76,38 @@ export class GeometryClient {
   private loadFallback() {
     if (!this.fallback) {
       this.fallback = (async () => {
-        const [{ initManifold }, { runBuild }, { TOOL_MAP }, { AssetCache, browserSource }, { FONT_URLS }, wasm] = await Promise.all([
+        const [{ initManifold }, { runBuild }, { TOOL_MAP }, { AssetCache, browserSource }, { FONT_URLS }, { fitToPrinter }, wasm] = await Promise.all([
           import('./manifold'),
           import('./engine'),
           import('../tools'),
           import('./assets'),
           import('./fontUrls'),
+          import('./fit'),
           import('manifold-3d/manifold.wasm?url'),
         ]);
         const M = await initManifold(wasm.default);
         const cache = new AssetCache(browserSource(FONT_URLS));
         const put = (u: Upload) => (u.type === 'font' ? cache.putFontBytes(u.key, u.bytes.slice(0)) : u.type === 'mesh' ? cache.putMesh(u.key, u.mesh) : cache.putShape(u.key, u.shape));
         for (const u of this.uploads.values()) put(u);
-        const run: Runner = async (tool, params, printer) => {
+        const run: Runner = async (tool, params, printer, fit) => {
           const def = TOOL_MAP[tool];
-          await cache.ensure(def.assets?.(params) ?? []);
-          // let the UI paint the "busy" state before blocking
-          await new Promise((r) => setTimeout(r, 0));
-          return runBuild(M, def, params, printer, cache);
+          const build = async (p: Params) => {
+            await cache.ensure(def.assets?.(p) ?? []);
+            // let the UI paint the "busy" state before blocking
+            await new Promise((r) => setTimeout(r, 0));
+            return runBuild(M, def, p, printer, cache);
+          };
+          if (!fit) return build(params);
+          const out = await fitToPrinter(def.params, params, printer, async (p) => {
+            try {
+              return { ok: true, result: await build(p) };
+            } catch (err) {
+              if (!(err as { user?: boolean })?.user) throw err;
+              return { ok: false, error: String((err as Error).message) };
+            }
+          });
+          if (!out.result) throw new UserError(out.error ?? 'Dit ontwerp past niet op deze printer.');
+          return { ...out.result, fit: { params: out.params, factor: out.factor, fits: out.fits } };
         };
         return { run, put };
       })();
@@ -93,20 +115,29 @@ export class GeometryClient {
     return this.fallback;
   }
 
-  async build(tool: string, params: Params, printer: PrinterProfile): Promise<BuildResult> {
+  build(tool: string, params: Params, printer: PrinterProfile): Promise<BuildResult> {
+    return this.request(tool, params, printer, false);
+  }
+
+  /** Build, shrinking the design's size parameters when it does not fit the printer (see core/fit.ts). */
+  fit(tool: string, params: Params, printer: PrinterProfile): Promise<FitBuild> {
+    return this.request(tool, params, printer, true);
+  }
+
+  private async request(tool: string, params: Params, printer: PrinterProfile, fit: boolean): Promise<FitBuild> {
     if (this.worker) {
       const id = ++this.seq;
       const w = this.worker;
       try {
-        return await new Promise<BuildResult>((resolve, reject) => {
+        return await new Promise<FitBuild>((resolve, reject) => {
           this.pending.set(id, { resolve, reject });
-          w.postMessage({ type: 'build', id, tool, params, printer });
+          w.postMessage({ type: fit ? 'fit' : 'build', id, tool, params, printer });
         });
       } catch (err) {
         if ((err as Error).message !== 'worker-restart') throw err;
       }
     }
     const { run } = await this.loadFallback();
-    return run(tool, params, printer);
+    return run(tool, params, printer, fit);
   }
 }
