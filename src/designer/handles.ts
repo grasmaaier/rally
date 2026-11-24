@@ -9,6 +9,7 @@
 import type { NumberParam, ParamDef, Params } from '../core/types';
 import { CORE_R, SOCKETS, kapRadius, shapeRadius, type SegSpec } from '../tools/lampParts';
 import { FIT_GUIDE } from '../tools/lampTube';
+import { FLUTE_DEPTH, fluteDepthFrac } from '../tools/lampFlute';
 import { isPendant, slotKey, type Sel } from './lampModel';
 
 export interface Handle {
@@ -39,7 +40,7 @@ const clamp = (v: number, a: number, b: number) => Math.min(b, Math.max(a, v));
 /** Name of the variant parameter for a shape (as shown next to the handle). */
 export const VARIANT_LABEL: Record<string, string> = {
   bol: 'Platte kant', kussen: 'Bolling', cilinder: 'Afronding', schijf: 'Afronding', tol: 'Punten', diabolo: 'Taille', kegel: 'Ø boven',
-  koepel: 'Platte top', boog: 'Boog', trap: 'Ø boven', bloem: 'Bladdiepte', tandwiel: 'Tanddiepte', lamel: 'Ringbreedte', kap: 'Ø boven',
+  koepel: 'Platte top', boog: 'Boog', trap: 'Ø boven', bloem: 'Bladdiepte', tandwiel: 'Tanddiepte', lamel: 'Ringbreedte', kap: 'Ø boven', ribring: 'Groefdiepte',
 };
 
 function specOf(p: Params, slot: number): SegSpec {
@@ -92,6 +93,8 @@ function variantHandle(s: SegSpec, topR: number): Omit<Handle, 'key' | 'label' |
     }
     case 'tandwiel':
       return { axis: 'r', r: R * (1 - lerp(0.08, 0.3, v)), z: H / 2, perMm: per(0.22 * R, -1) };
+    case 'ribring':
+      return { axis: 'r', r: R * (1 - fluteDepthFrac(v)), z: H / 2, perMm: per((FLUTE_DEPTH[1] - FLUTE_DEPTH[0]) * R, -1) };
     case 'bloem':
       return { axis: 'r', r: R * (1 - lerp(0.12, 0.45, v)), z: H / 2, perMm: per(0.33 * R, -1) };
     case 'tol':
@@ -113,6 +116,10 @@ function variantHandle(s: SegSpec, topR: number): Omit<Handle, 'key' | 'label' |
       return { axis: 'r', r: R - w, z: H / 2, perMm: per(0.45 * R - 8, -1) };
     }
     case 'kap': {
+      if (s.kap === 'geribbeld') {
+        const RR = Math.max(R, topR);
+        return { axis: 'r', r: RR * (1 - fluteDepthFrac(v)), z: H / 2, perMm: per((FLUTE_DEPTH[1] - FLUTE_DEPTH[0]) * RR, -1) };
+      }
       if (s.kap !== 'kegel' && s.kap !== 'klok' && s.kap !== 'trap') return null;
       const RR = Math.max(R, topR);
       return { axis: 'r', r: Math.min(RR, Math.max(topR, lerp(topR, RR, v))), z: H, perMm: per(RR - topR) };
@@ -162,7 +169,7 @@ export function handlesFor(sel: Sel, p: Params): ElementHandles | null {
         key: slotKey(sel.slot, 'Var'),
         z: wz(vh.z),
         perMm: vh.axis === 'z' && mirrored ? -vh.perMm : vh.perMm,
-        label: VARIANT_LABEL[s.shape] ?? 'Variant',
+        label: s.shape === 'kap' && s.kap === 'geribbeld' ? 'Groefdiepte' : (VARIANT_LABEL[s.shape] ?? 'Variant'),
         unit: '%',
         snap: 5,
       });

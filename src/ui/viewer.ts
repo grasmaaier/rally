@@ -13,6 +13,8 @@ export interface PartLook {
   translucent?: boolean;
   /** Water-clear filament. */
   clear?: boolean;
+  /** Matte filament (no sheen). */
+  matte?: boolean;
 }
 
 interface Theme {
@@ -661,7 +663,7 @@ export function applyLook(m: THREE.MeshPhysicalMaterial, look: PartLook, back: b
     m.opacity = see ? 0.75 : 1;
   } else {
     m.color.set(look.color);
-    m.roughness = see ? (look.clear ? 0.08 : 0.32) : 0.5;
+    m.roughness = see ? (look.clear ? 0.08 : 0.32) : look.matte ? 0.9 : 0.5;
     m.transmission = see ? (look.clear ? 0.95 : 0.65) : 0;
     m.thickness = see ? 1.2 : 0;
     m.ior = 1.5;

@@ -132,11 +132,11 @@ function swatchRow(d: SelectParam, onChange: Change) {
   grid.setAttribute('role', 'radiogroup');
   grid.setAttribute('aria-label', d.label);
   const buttons = d.options.map((o) => {
-    const b = el('button', 'sw');
+    const b = el('button', o.value === 'auto' ? 'sw sw-auto' : 'sw');
     b.type = 'button';
     b.dataset.value = o.value;
     b.setAttribute('role', 'radio');
-    b.style.setProperty('--c', o.value);
+    if (o.value !== 'auto') b.style.setProperty('--c', o.value);
     b.title = o.label;
     b.setAttribute('aria-label', o.label);
     b.addEventListener('click', () => onChange(d.key, o.value, true));
@@ -203,7 +203,8 @@ function textRow(d: ParamDef & { type: 'text' }, onChange: Change) {
 
 /** How a select is shown. */
 export function selectKind(d: SelectParam): 'swatch' | TileKind | 'dropdown' {
-  if (d.options.length > 0 && d.options.every((o) => HEX.test(o.value))) return 'swatch';
+  // colours, optionally with an "auto" swatch first
+  if (d.options.some((o) => HEX.test(o.value)) && d.options.every((o) => HEX.test(o.value) || o.value === 'auto')) return 'swatch';
   if (/^s\dShape$/.test(d.key)) return 'shape';
   if (/^s\dKap$/.test(d.key)) return 'kap';
   if (d.options.length <= 4 && d.options.every((o) => shortLabel(o.label).length <= 14)) return 'text';

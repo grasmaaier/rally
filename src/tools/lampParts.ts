@@ -1,6 +1,7 @@
 import { TAU, clamp, lerp } from '../geom/helpers';
 import { sectionFn } from '../geom/surface';
 import type { LathePattern } from '../geom/lathe';
+import { fluteOf, flutePattern } from './lampFlute';
 
 // ---------------------------------------------------------------------------
 // Lamp hardware (typical catalogue sizes; check your own parts)
@@ -96,6 +97,7 @@ export const SHAPE_OPTIONS = [
   { value: 'bloem', label: 'Bloemschijf' },
   { value: 'tandwiel', label: 'Tandwielschijf' },
   { value: 'schijf', label: 'Platte schijf' },
+  { value: 'ribring', label: 'Geribbelde ring (glas)' },
   { value: 'hals', label: 'Afstandshouder — hals' },
   { value: 'stijlen', label: 'Afstandshouder — stijlen' },
   { value: 'kap', label: 'Kap (open lampenkap)' },
@@ -108,6 +110,7 @@ export const KAP_OPTIONS = [
   { value: 'klok', label: 'Klok' },
   { value: 'koepel', label: 'Koepel (halve bol)' },
   { value: 'trap', label: 'Ziggurat (getrapt)' },
+  { value: 'geribbeld', label: 'Geribbelde koker (glas)' },
 ];
 
 export const TEXTURE_OPTIONS = [
@@ -127,13 +130,22 @@ export const COLOR_OPTIONS = [
   { value: '#2f5aa8', label: 'Blauw' },
   { value: '#e7a3b0', label: 'Roze' },
   { value: '#8fae8b', label: 'Salie' },
+  { value: '#3f8f55', label: 'Groen' },
   { value: '#e07b39', label: 'Oranje' },
   { value: '#9aa0a6', label: 'Grijs' },
   { value: '#2b2b2e', label: 'Zwart' },
 ];
 
 /** Shapes with a count (peaks, steps, petals, teeth, posts). */
-export const COUNTED = new Set(['tol', 'diabolo', 'trap', 'bloem', 'tandwiel', 'stijlen']);
+export const COUNTED = new Set(['tol', 'diabolo', 'trap', 'bloem', 'tandwiel', 'stijlen', 'ribring']);
+/** Fluted shapes (ribbed glass): the ring segment and the kap "geribbelde koker". */
+export const isFluted = (s: { shape: string; kap: string }) => s.shape === 'ribring' || (s.shape === 'kap' && s.kap === 'geribbeld');
+
+export const MAT_OPTIONS = [
+  { value: 'auto', label: 'Automatisch (kap en ribbelring doorschijnend)' },
+  { value: 'helder', label: 'Doorschijnend (PETG translucent)' },
+  { value: 'mat', label: 'Dekkend, mat' },
+];
 /** Shapes without a pattern or flip. */
 export const SPACERS = new Set(['hals', 'stijlen']);
 
@@ -150,6 +162,12 @@ export interface SegSpec {
   tex: string;
   texN: number;
   color: string;
+  /** Material: 'auto', 'helder' (translucent) or 'mat' (opaque). */
+  mat?: string;
+  /** Fluted shapes: groove share of the pitch and rounding of the ribs (0…1), scalloped rim (mm). */
+  groove?: number;
+  round?: number;
+  scallop?: number;
 }
 
 /**
@@ -180,6 +198,14 @@ export function shapeRadius(s: SegSpec): (z: number) => number {
       case 'schijf':
       case 'hals': {
         const rf = v * Math.min(h / 2, (R - core) * 0.9, 20);
+        return (t) => {
+          const d = Math.min(t, 1 - t) * h;
+          return d >= rf ? R : R - rf + Math.sqrt(Math.max(0, rf * rf - (rf - d) ** 2));
+        };
+      }
+      case 'ribring': {
+        // straight fluted sides, the edges softly rounded
+        const rf = Math.min(1, h / 4);
         return (t) => {
           const d = Math.min(t, 1 - t) * h;
           return d >= rf ? R : R - rf + Math.sqrt(Math.max(0, rf * rf - (rf - d) ** 2));
@@ -273,6 +299,7 @@ export function ringFactor(s: SegSpec, texDepth: number, R: number): (z: number)
 /** Pattern around a segment: petals / teeth of the outline and vertical pleats. */
 export function patternFor(s: SegSpec, texDepth: number): LathePattern {
   const R = s.D / 2;
+  if (s.shape === 'ribring') return flutePattern(fluteOf(R, s.v, s.n, s.groove ?? 0.5, s.round ?? 0.6));
   let base = Math.round(clamp((TAU * R) / 1.4, 96, 360));
   let outline: ((th: number) => number) | null = null;
   if (s.shape === 'bloem' || s.shape === 'tandwiel') {

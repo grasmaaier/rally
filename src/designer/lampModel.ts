@@ -9,7 +9,7 @@ import { COLOR_OPTIONS, KAP_OPTIONS, SHAPE_OPTIONS } from '../tools/lampParts';
 
 export const MAX_SEGMENTS = 8;
 /** Per-slot parameter suffixes: s{slot}{field}. */
-export const SLOT_FIELDS = ['Shape', 'Kap', 'D', 'H', 'Var', 'N', 'Flip', 'Tex', 'TexN', 'Color'] as const;
+export const SLOT_FIELDS = ['Shape', 'Kap', 'D', 'H', 'Var', 'N', 'Flip', 'Tex', 'TexN', 'Groove', 'Round', 'Scallop', 'Color', 'Mat'] as const;
 export type SlotField = (typeof SLOT_FIELDS)[number];
 
 export const slotKey = (slot: number, field: SlotField) => `s${slot}${field}`;
@@ -80,7 +80,7 @@ export function selValid(s: Sel, p: Params): boolean {
 
 export const SHAPE_SHORT: Record<string, string> = {
   bol: 'Bol', kussen: 'Kussen', cilinder: 'Cilinder', tol: 'Tol', diabolo: 'Diabolo', kegel: 'Kegel', koepel: 'Koepel', boog: 'Boog', trap: 'Ziggurat',
-  bloem: 'Bloem', tandwiel: 'Tandwiel', schijf: 'Schijf', hals: 'Hals', stijlen: 'Stijlen', kap: 'Kap', lamel: 'Lamel',
+  bloem: 'Bloem', tandwiel: 'Tandwiel', schijf: 'Schijf', hals: 'Hals', stijlen: 'Stijlen', kap: 'Kap', lamel: 'Lamel', ribring: 'Ribbelring',
 };
 
 export interface SegmentInfo {
@@ -97,7 +97,7 @@ export interface SegmentInfo {
   H: number;
 }
 
-const NO_FLIP = new Set(['hals', 'stijlen', 'kap', 'lamel']);
+const NO_FLIP = new Set(['hals', 'stijlen', 'kap', 'lamel', 'ribring']);
 
 export function segmentInfo(p: Params, slot: number): SegmentInfo {
   const shape = String(p[slotKey(slot, 'Shape')] ?? 'cilinder');
@@ -166,6 +166,7 @@ export const SHAPE_DEFAULTS: Record<string, { D: number; H: number; Var: number;
   bloem: { D: 130, H: 16, Var: 50, N: 8 },
   tandwiel: { D: 130, H: 14, Var: 50, N: 18 },
   schijf: { D: 160, H: 8, Var: 30 },
+  ribring: { D: 180, H: 14, Var: 70, N: 36 },
   hals: { D: 26, H: 30, Var: 20 },
   stijlen: { D: 80, H: 30, Var: 20, N: 3 },
   kap: { D: 220, H: 120, Var: 20, Kap: 'koepel' },
@@ -188,7 +189,7 @@ export function insertSegment(p: Params, at: number, shape: string): Params {
   const out = shiftDown(p, pos, n);
   const d = SHAPE_DEFAULTS[shape] ?? SHAPE_DEFAULTS.cilinder;
   const near = new Set([p[slotKey(pos - 1, 'Color')], p[slotKey(pos, 'Color')]]);
-  const color = shape === 'kap' || shape === 'lamel' ? '#f2efe8' : (COLOR_OPTIONS.find((o) => !near.has(o.value) && o.value !== '#f2efe8')?.value ?? '#d8c3a0');
+  const color = shape === 'kap' || shape === 'lamel' || shape === 'ribring' ? '#f2efe8' : (COLOR_OPTIONS.find((o) => !near.has(o.value) && o.value !== '#f2efe8')?.value ?? '#d8c3a0');
   Object.assign(out, {
     [slotKey(pos, 'Shape')]: SHAPE_DEFAULTS[shape] ? shape : 'cilinder',
     [slotKey(pos, 'Kap')]: d.Kap ?? 'koepel',
@@ -199,7 +200,11 @@ export function insertSegment(p: Params, at: number, shape: string): Params {
     [slotKey(pos, 'Flip')]: false,
     [slotKey(pos, 'Tex')]: 'glad',
     [slotKey(pos, 'TexN')]: 96,
+    [slotKey(pos, 'Groove')]: 45,
+    [slotKey(pos, 'Round')]: 80,
+    [slotKey(pos, 'Scallop')]: 0,
     [slotKey(pos, 'Color')]: color,
+    [slotKey(pos, 'Mat')]: 'auto',
   });
   out.count = n + 1;
   return out;
@@ -239,10 +244,10 @@ export function toggleFlip(p: Params, slot: number): Params {
 const GLOBAL_KEYS: Record<Exclude<GlobalKind, 'layers'>, string[]> = {
   lamp: ['lampType', 'texDepth', 'shadeWall', 'shellPrint', 'shellWall'],
   tube: ['connection', 'tubeD', 'threadPlay', 'tubeExtra', 'fitTest'],
-  socket: ['socket', 'bulb27', 'bulb14', 'clearance', 'cover', 'fitSize', 'fitRingD', 'fitRingH', 'fitBodyD', 'fitTopD', 'fitTopH', 'fitH'],
-  closed: ['closed', 'closedShape', 'closedH', 'centerBulb', 'seamPlay', 'vents'],
+  socket: ['socket', 'bulb27', 'bulb14', 'clearance', 'cover', 'fitSize', 'fitRingD', 'fitRingH', 'fitBodyD', 'fitTopD', 'fitTopH', 'fitH', 'cupColor'],
+  closed: ['closed', 'closedShape', 'closedH', 'closedWall', 'closedDrop', 'closedOpen', 'centerBulb', 'seamPlay', 'vent'],
   base: ['baseShape', 'baseD', 'baseH', 'baseColor', 'ballast', 'felt'],
-  canopy: ['cableCap', 'canopy', 'canopyD', 'canopyH', 'canopyScrews', 'canopyColor'],
+  canopy: ['cableCap', 'capColor', 'canopy', 'canopyD', 'canopyH', 'canopyScrews', 'canopyColor'],
 };
 
 /** Keys managed by the designer itself (not shown in any inspector). */

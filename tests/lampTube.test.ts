@@ -67,7 +67,7 @@ const ring = (rIn: number, rOut: number, z0: number, z1: number) =>
  * neighbouring part covers an annulus inside the rim (the opening) and one
  * just outside it (the rim rests on it), clear of the centring groove.
  */
-function openRims(res: BuildResult, wall: number) {
+function openRims(res: BuildResult, wall: number, vented = /^$/) {
   const solids = placed(res);
   const out: string[] = [];
   for (const sh of solids.filter((q) => q.name.endsWith('(hol)'))) {
@@ -84,7 +84,9 @@ function openRims(res: BuildResult, wall: number) {
       for (const [r0, r1] of zones) {
         const probe = ring(r0, r1, za, za + 0.3);
         const covered = probe.intersect(others).volume() / probe.volume();
-        if (covered < 0.95) out.push(`${sh.name} ${sign > 0 ? 'boven' : 'onder'} (r ${r0.toFixed(1)}–${r1.toFixed(1)}): ${(covered * 100).toFixed(0)}% dicht`);
+        // a rim on a kap ceiling with hidden vents: the channels run under it on purpose (holes and grooves)
+        const need = vented.test(sh.name) ? 0.35 : 0.95;
+        if (covered < need) out.push(`${sh.name} ${sign > 0 ? 'boven' : 'onder'} (r ${r0.toFixed(1)}–${r1.toFixed(1)}): ${(covered * 100).toFixed(0)}% dicht`);
       }
     }
   }
@@ -120,7 +122,9 @@ describe('geprinte schroefbuis: standaard en voorbeelden', () => {
     const res = await buildTool(M, tool, params(v));
     checkParts(res, _n);
     expect(overlaps(res)).toEqual([]);
-    expect(openRims(res, 0.8)).toEqual([]);
+    // closed lamps vent (hidden) through the kap ceiling under the part above
+    const hidden = v.closed === true && (v.vent ?? 'verborgen') === 'verborgen';
+    expect(openRims(res, 0.8, hidden ? /^1\. / : /^$/)).toEqual([]);
     for (const part of res.parts) {
       const s = parseSel(part.select);
       expect(selKey(s), `${part.name} → ${part.select}`).toBe(part.select);
@@ -296,20 +300,22 @@ describe('dichte lamp', () => {
   });
 
   it('puts the seam at the middle of the bulb and has vents top and bottom', async () => {
-    const res = await buildTool(M, tool, globe());
+    const res = await buildTool(M, tool, globe({ vent: 'gaatjes' }));
     const solids = placed(res);
     const under = solids.find((q) => q.name.endsWith('Onderkap'))!;
     const kap = solids.find((q) => q.name === '2. Kap')!;
-    const bulb = res.scene!.find((s) => s.kind === 'box' && s.label?.startsWith('A60'));
-    if (!bulb || bulb.kind !== 'box') throw new Error('no bulb');
+    const bulb = res.scene!.find((s) => s.kind === 'mesh' && s.label?.startsWith('A60'));
+    if (!bulb || bulb.kind !== 'mesh') throw new Error('no bulb');
+    const zs = Array.from(bulb.mesh.positions).filter((_, i) => i % 3 === 2);
     const seam = under.m.boundingBox().max[2];
-    expect(Math.abs(seam - (bulb.position[2] + 30))).toBeLessThan(1);
+    // the A60 (Ø60) is widest 30 mm above its tip
+    expect(Math.abs(seam - (Math.min(...zs) + 30))).toBeLessThan(1);
     // the threaded neck of the kap reaches into the second shade
     expect(kap.m.boundingBox().min[2]).toBeLessThan(seam - 8);
-    // vents: every opening is a handle of the surface
+    // visible vents: every opening is a handle of the surface
     expect(kap.m.genus()).toBeGreaterThanOrEqual(8);
     expect(under.m.genus()).toBeGreaterThanOrEqual(6);
-    const closedVents = await buildTool(M, tool, globe({ vents: false }));
+    const closedVents = await buildTool(M, tool, globe({ vent: 'geen' }));
     expect(solidOf(closedVents.parts.find((q) => q.name.endsWith('Onderkap'))!).genus()).toBe(0);
   });
 

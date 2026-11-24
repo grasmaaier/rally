@@ -143,6 +143,12 @@ export const coasterTool: ToolDef = {
   om dat te testen. Horizontale gaten als druppel (`teardrop`), plafonds als kegel van 45°.
 - **Past op de printer**: gebruik altijd `ctx.printer` (nooit een vaste maat), en geef een duidelijke
   `UserError` of deel het onderdeel op.
+  Voorbeelden, "Verras me" en een andere printer verkleinen een ontwerp dat niet past automatisch
+  (`core/fit.ts`): alle maten in mm met een groot bereik schalen mee, behalve wanddiktes, schroeven,
+  spelingen, fittingen en andere hardware. Klopt die gok niet voor een parameter, zet dan
+  `scale: false` (nooit schalen) of `scale: true` (wel schalen, ook aantallen) op de `NumberParam`.
+  Noem in een maatfout de maat zoals `(180 × 85 × 110 mm)` of `(Ø200 × 8 mm)`: daar rekent het verkleinen mee.
+  `tests/fit.presets.*.test.ts` controleert elk voorbeeld op elke printer.
 - **Taal**: alles wat de gebruiker ziet in het Nederlands; code en commentaar in het Engels.
 - Onderdelen kunnen een `color`, `material` (filamentlijn uit `core/filaments.ts`), `purpose`
   (`'lamp'`, `'outdoor'`, `'flexible'`) en `estimate: 'vase'` meekrijgen; daar rekent de

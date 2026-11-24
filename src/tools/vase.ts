@@ -2,6 +2,7 @@ import type { ToolDef, Params, BuildOutput, ParamDef, AssetRef, AssetStore } fro
 import { UserError, bool, num, str } from '../core/types';
 import { CLASSIC_SECTIONS, buildShape, solidOfSurface, shellOfSurface, insetSurface, type ShapeBuild, type ShapeOptions } from '../geom/surface';
 import { TAU } from '../geom/helpers';
+import { fitsOn } from '../core/printer';
 import { SHAPE_USES, effectiveSpec, radialShape, type ShapeSpec } from '../geom/shapes2d';
 
 export const SECTION_OPTIONS = [
@@ -275,7 +276,8 @@ function build(p: Params, { M, printer, assets }: Parameters<ToolDef['build']>[1
       ['Resolutie', `${segs} × ${zs ? rings + zs.length : rings}`],
     ],
   });
-  if (footprint > Math.min(printer.x, printer.y) - 10) warnings.push(`Te breed voor de ${printer.name}.`);
+  const bb = solid.boundingBox();
+  if (!fitsOn(printer, [bb.max[0] - bb.min[0], bb.max[1] - bb.min[1], bb.max[2] - bb.min[2]])) warnings.push(`Te groot voor de ${printer.name}.`);
 
   return {
     parts: [{ name: mode === 'lamp' ? 'Lampenkap' : 'Vaas', solid, estimate: mode === 'vase' ? 'vase' : 'solid', ...(mode === 'lamp' ? { material: 'petg-translucent', purpose: 'lamp' as const } : {}) }],

@@ -24,6 +24,12 @@ export interface NumberParam extends ParamBase {
   step?: number;
   default: number;
   unit?: string;
+  /**
+   * May this value shrink to make the design fit a smaller printer?
+   * Default: millimetre sizes with a large range (see core/fit.ts); set false
+   * for hardware and functional measures, true for e.g. a scale factor.
+   */
+  scale?: boolean;
 }
 
 export interface SelectParam extends ParamBase {
