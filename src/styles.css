@@ -976,9 +976,10 @@ th:first-child {
 
 .shop-head {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
-  gap: 8px;
+  gap: 0 8px;
 }
 
 .shop-actions {
@@ -2823,6 +2824,15 @@ input[type='range'].thin:focus-visible::-webkit-slider-thumb {
   .preset-row,
   body.designer .preset-row {
     top: -8px;
+  }
+
+  /* narrow side column: the examples menu gets its own line */
+  .preset-row {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  }
+
+  #presets {
+    grid-column: 1 / -1;
   }
 
   .intro h1 {

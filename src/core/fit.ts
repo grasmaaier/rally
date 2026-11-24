@@ -162,7 +162,16 @@ export async function fitToPrinter(defs: ParamDef[], params: Params, printer: Pr
       if (good(up)) {
         lo *= 1.04;
         loT = up;
-      }
+        // the estimate was cautious (e.g. a part the tool turns on the bed): look a little further
+        for (let i = 0; i < 2 && (hi - lo) / hi > 0.045; i++) {
+          const mid = (lo + hi) / 2;
+          const m = await tryAt(mid);
+          if (good(m)) {
+            lo = mid;
+            loT = m;
+          } else hi = mid;
+        }
+      } else hi = lo * 1.04;
     }
   } else {
     // shrunk in blind steps after an error: grow by the room left on the plate, then bisect a little
